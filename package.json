@@ -1,0 +1,1 @@
+{"name":"word-ai-poc","private":true,"scripts":{"start":"node server.mjs","test":"node --test"},"devDependencies":{"office-addin-dev-certs":"^1.13.5"},"type":"module"}
