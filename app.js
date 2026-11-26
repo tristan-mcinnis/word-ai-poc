@@ -172,16 +172,16 @@ function renderEmptyState() {
 
   const starters = hasSelection
     ? [
+        { title: 'Talk through how to improve this', sub: 'Critique and ideas before rewriting', prompt: 'What do you think of the selected passage? Point out what works, what feels weak, and how you would sharpen it before we rewrite.' },
         { title: 'Tighten this passage', sub: 'Cut filler while keeping your voice', prompt: 'Tighten the selected passage. Remove filler and hedging, keep the meaning.' },
         { title: 'Translate to Chinese below', sub: 'Insert natural Chinese underneath', prompt: 'Translate the selected passage into natural Chinese and insert it directly underneath.' },
-        { title: 'Critique what could be stronger', sub: 'Direct feedback without rewriting yet', prompt: 'Critique this passage. What is unclear, wordy, or weak?' },
-        { title: 'Turn into crisp bullets', sub: 'One clear idea per bullet', prompt: 'Turn the selected passage into a short bullet list, one idea per bullet.' },
+        { title: 'Explore alternative angles', sub: '2–3 different ways to frame this', prompt: 'Give me 2 or 3 different ways to frame the selected passage, and tell me which one you think lands best.' },
       ]
     : [
-        { title: 'Summarise this document', sub: 'Key takeaways in 3–4 bullets', prompt: 'Summarise the key points of this document in 3 to 4 crisp bullets.' },
-        { title: 'Review for clarity & flow', sub: 'Find weak spots and suggest edits', prompt: 'Review this document for clarity, structure, and flow. Point out the main issues and suggest concrete edits.' },
+        { title: 'Think through this document', sub: 'Honest read on structure, gaps, and flow', prompt: 'Read the document and give me your honest take on the structure, clarity, and what is missing or could be stronger. Just chat with me first before making edits.' },
+        { title: 'Where should I edit first?', sub: 'Prioritised list of highest-impact fixes', prompt: 'If we only had 5 minutes to improve this document, which 2 or 3 spots would you fix first and why?' },
+        { title: 'Summarise the main argument', sub: 'Quick read on what it actually says', prompt: 'Summarise what this document currently says in 3 crisp bullets, and flag anything that feels unclear.' },
         { title: 'Draft the next section', sub: 'Continue naturally in the same voice', prompt: 'Based on the document so far, draft a concise next paragraph to append at the end.' },
-        { title: 'Tighten the whole draft', sub: 'Propose targeted edits across the doc', prompt: 'Identify the wordiest sentences in this document and propose sharper replacements.' },
       ];
 
   const subtitle = hasSelection

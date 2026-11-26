@@ -35,7 +35,7 @@ The installer will:
 5. Install and start a macOS LaunchAgent so the local server runs automatically in the background
 
 Then open (or restart) Microsoft Word and go to:
-**Home → Add-ins → Developer Add-ins → Local Editor POC**
+**Home → Add-ins → Developer Add-ins → AI Editor**
 
 ## API Keys
 

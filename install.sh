@@ -145,7 +145,7 @@ fi
 echo ""
 echo "Done! Next steps:"
 echo "  1. Open (or restart) Microsoft Word."
-echo "  2. Go to Home -> Add-ins -> Developer Add-ins -> Local Editor POC."
+echo "  2. Go to Home -> Add-ins -> Developer Add-ins -> AI Editor."
 echo "  3. Chat about your document, or select text to edit it in place."
 echo ""
 echo "To add more API keys later, edit: $ENV_FILE"
