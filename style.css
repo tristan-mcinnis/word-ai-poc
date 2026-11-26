@@ -18,6 +18,9 @@
   --del-ink: #9b1c1c;
   --ins-bg: #e7f6ec;
   --ins-ink: #166534;
+  --word-dot: #2b579a;
+  --excel-dot: #217346;
+  --ppt-dot: #c43e1c;
   --radius: 12px;
   --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
 }
@@ -41,7 +44,7 @@ button, select, textarea {
 }
 
 /* ---------- Header ---------- */
-/* Right padding reserves safe space for macOS Word's floating info (i) badge */
+/* Right padding reserves safe space for macOS Office's floating info (i) badge */
 #topbar {
   display: flex;
   align-items: center;
@@ -57,13 +60,7 @@ button, select, textarea {
   display: flex;
   align-items: center;
   gap: 7px;
-}
-
-.brand-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--accent);
+  min-width: 0;
 }
 
 #topbar h1 {
@@ -71,7 +68,45 @@ button, select, textarea {
   font-weight: 600;
   margin: 0;
   letter-spacing: -0.01em;
+  white-space: nowrap;
 }
+
+.host-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1.5px 7px;
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--ink-secondary);
+  white-space: nowrap;
+}
+.host-badge[hidden] { display: none; }
+.host-badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.host-badge.host-word::before { background: var(--word-dot); }
+.host-badge.host-excel::before { background: var(--excel-dot); }
+.host-badge.host-powerpoint::before { background: var(--ppt-dot); }
+
+.preview-host {
+  border: 1px solid var(--line);
+  background: var(--surface-subtle);
+  color: var(--ink-secondary);
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  outline: none;
+}
+.preview-host[hidden] { display: none; }
 
 .header-actions {
   display: flex;
@@ -278,6 +313,54 @@ button, select, textarea {
 .prose pre code { background: none; padding: 0; }
 .prose hr { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
 
+/* Markdown tables */
+.md-table-wrap {
+  margin: 8px 0;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.md-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.md-table th, .md-table td {
+  text-align: left;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.md-table th {
+  background: var(--surface-subtle);
+  font-weight: 600;
+  color: var(--ink-secondary);
+}
+.md-table tr:last-child td { border-bottom: none; }
+
+/* Clickable cell & slide citation chips */
+.ref-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-subtle);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 0 5px;
+  border-radius: 5px;
+  cursor: pointer;
+  vertical-align: baseline;
+  transition: background 0.12s, border-color 0.12s;
+}
+.ref-chip:hover {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: #fff;
+}
+
 /* ---------- Structured Edit Cards ---------- */
 .edit-card {
   background: #fafafa;
@@ -289,6 +372,10 @@ button, select, textarea {
 .edit-card.applied {
   border-color: #d4d4d0;
   background: #f8f8f7;
+}
+
+.edit-card.danger {
+  border-color: #fecdca;
 }
 
 .edit-card-head {
@@ -342,6 +429,95 @@ button, select, textarea {
   overflow-y: auto;
 }
 
+/* Rich Excel grid & formula previews inside edit cards */
+.excel-preview-wrap {
+  overflow-x: auto;
+  white-space: normal;
+}
+.excel-preview-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.excel-preview-table td {
+  padding: 4px 7px;
+  border: 1px solid var(--line);
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.excel-preview-table tr:first-child td {
+  font-weight: 600;
+  background: var(--surface-subtle);
+}
+.excel-preview-table td.is-formula {
+  font-family: var(--mono);
+  color: var(--excel-dot);
+}
+.excel-preview-note {
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.formula-preview {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--excel-dot);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 6px 9px;
+}
+
+.spec-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  white-space: normal;
+}
+.spec-pill {
+  font-size: 11.5px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 7px;
+  color: var(--ink-secondary);
+}
+
+/* Rich PowerPoint mini-slide preview inside edit cards */
+.slide-preview {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  white-space: normal;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.slide-preview-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1.3;
+}
+.slide-preview-sub {
+  font-size: 12px;
+  color: var(--ink-secondary);
+}
+.slide-preview-bullets {
+  margin: 2px 0 0;
+  padding-left: 16px;
+  font-size: 12px;
+  color: var(--ink-secondary);
+}
+.slide-preview-bullets li { margin: 2px 0; }
+
 .diff-del {
   background: var(--del-bg);
   color: var(--del-ink);
@@ -384,6 +560,14 @@ button, select, textarea {
   border-color: var(--line-strong);
   color: var(--ink-secondary);
 }
+.btn-primary.btn-danger {
+  background: var(--err);
+  border-color: var(--err);
+  color: #fff;
+}
+.btn-primary.btn-danger:hover {
+  background: #912018;
+}
 
 .btn-secondary {
   border: 1px solid var(--line);
@@ -415,6 +599,12 @@ button, select, textarea {
 }
 .turn.assistant:hover .turn-meta {
   opacity: 1;
+}
+
+.meta-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .meta-btn {
@@ -651,6 +841,7 @@ button, select, textarea {
   border-radius: 6px;
   cursor: pointer;
 }
+.tool-btn[hidden] { display: none; }
 .tool-btn:hover, .tool-btn.open {
   background: var(--surface-subtle);
   color: var(--ink);

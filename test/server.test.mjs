@@ -1,0 +1,188 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createConfigStore } from '../lib/providers.mjs';
+import { createRequestHandler, STATIC_FILES } from '../lib/server-core.mjs';
+
+function makeTempConfigDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'office-ai-test-'));
+}
+
+async function startTestServer({ store, fetchImpl } = {}) {
+  const handler = createRequestHandler({
+    allowedHost: 'localhost:3443',
+    store,
+    fetchImpl,
+    logger: null,
+  });
+  const server = http.createServer(handler);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+
+  const request = (urlPath, { method = 'GET', headers = {}, body = null } = {}) =>
+    new Promise((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port,
+          path: urlPath,
+          method,
+          headers: { Host: 'localhost:3443', ...headers },
+        },
+        res => {
+          let data = '';
+          res.on('data', chunk => { data += chunk; });
+          res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: data }));
+        },
+      );
+      req.on('error', reject);
+      if (body) req.write(body);
+      req.end();
+    });
+
+  return { server, request, close: () => new Promise(r => server.close(r)) };
+}
+
+test('server enforces Host allowlist, serves static allowlist, and blocks traversal/private files', async () => {
+  const tmpDir = makeTempConfigDir();
+  const store = createConfigStore({ configDir: tmpDir, cwd: tmpDir, env: {}, enableExternalHelper: false });
+  const srv = await startTestServer({ store });
+  try {
+    // DNS rebinding Host rejection
+    const badHost = await srv.request('/api/config', { headers: { Host: 'evil.com:3443' } });
+    assert.equal(badHost.status, 403);
+
+    // Every allowlisted static file returns 200
+    for (const urlPath of Object.keys(STATIC_FILES)) {
+      const res = await srv.request(urlPath);
+      assert.equal(res.status, 200, `Expected 200 for ${urlPath}`);
+    }
+
+    // Server internals and path traversal are blocked
+    assert.equal((await srv.request('/server.mjs')).status, 404);
+    assert.equal((await srv.request('/lib/providers.mjs')).status, 404);
+    assert.equal((await srv.request('/../package.json')).status, 404);
+  } finally {
+    await srv.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('server /api/config and /api/keys persist settings without ever echoing secrets back', async () => {
+  const tmpDir = makeTempConfigDir();
+  const store = createConfigStore({ configDir: tmpDir, cwd: tmpDir, env: {}, enableExternalHelper: false });
+  const srv = await startTestServer({ store });
+  try {
+    const cfgPost = await srv.request('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'anthropic' }),
+    });
+    assert.equal(cfgPost.status, 200);
+    assert.equal(JSON.parse(cfgPost.body).active.provider, 'anthropic');
+
+    const secret = 'sk-ant-super-secret-value-999';
+    const keySave = await srv.request('/api/keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'anthropic', apiKey: secret }),
+    });
+    assert.equal(keySave.status, 200);
+    assert.doesNotMatch(keySave.body, new RegExp(secret));
+
+    const keyGet = await srv.request('/api/keys');
+    assert.equal(keyGet.status, 200);
+    assert.doesNotMatch(keyGet.body, new RegExp(secret));
+    const parsed = JSON.parse(keyGet.body);
+    const claude = parsed.providers.find(p => p.id === 'anthropic');
+    assert.equal(claude.configured, true);
+    assert.equal(claude.source, 'config');
+  } finally {
+    await srv.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('server /api/chat routes host-specific prompts and streams OpenAI and Anthropic SSE cleanly', async () => {
+  const tmpDir = makeTempConfigDir();
+  const store = createConfigStore({
+    configDir: tmpDir,
+    cwd: tmpDir,
+    env: { DEEPSEEK_API_KEY: 'ds-key', ANTHROPIC_API_KEY: 'ant-key' },
+    enableExternalHelper: false,
+  });
+
+  const capturedBodies = [];
+  const mockFetch = async (url, opts) => {
+    const payload = JSON.parse(opts.body);
+    capturedBodies.push({ url, payload });
+
+    const isAnthropic = url.includes('anthropic.com');
+    const chunks = isAnthropic
+      ? [
+          'data: {"type":"content_block_delta","delta":{"text":"Slide 2 looks crisp. "}}\n',
+          'data: {"type":"content_block_delta","delta":{"text":"<edit action=\\"add_slide\\" layout=\\"Title and Content\\">Title: Next Steps</edit>"}}\n',
+        ]
+      : [
+          'data: {"choices":[{"delta":{"content":"Check `C4`: "}}]}\n',
+          'data: {"choices":[{"delta":{"content":"<edit action=\\"set_formula\\" cell=\\"C4\\">=IFERROR(C2/C3,0)</edit>"}}]}\n',
+          'data: [DONE]\n',
+        ];
+
+    const body = (async function* () {
+      for (const c of chunks) yield new TextEncoder().encode(c);
+    })();
+    return { ok: true, status: 200, body, text: async () => '' };
+  };
+
+  const srv = await startTestServer({ store, fetchImpl: mockFetch });
+  try {
+    // 1. Excel chat via OpenAI-compatible provider (DeepSeek default)
+    const excelRes = await srv.request('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        host: 'excel',
+        messages: [{ role: 'user', content: 'Fix C4' }],
+        documentText: '| Row | A | B | C |\n| 4 | Margin | 0.4 | #DIV/0! |',
+        hostContext: {
+          sheets: [{ name: 'Model', active: true }],
+          errors: ['Model!C4: #DIV/0!'],
+        },
+      }),
+    });
+    assert.equal(excelRes.status, 200);
+    assert.match(excelRes.body, /set_formula/);
+    assert.match(excelRes.body, /"host":"excel"/);
+    assert.match(capturedBodies[0].payload.messages[0].content, /Microsoft Excel/);
+    assert.match(capturedBodies[0].payload.messages[1].content, /<errors>[\s\S]*#DIV\/0!/);
+
+    // 2. Switch to Claude and run PowerPoint chat
+    await srv.request('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'anthropic' }),
+    });
+    const pptRes = await srv.request('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        host: 'powerpoint',
+        messages: [{ role: 'user', content: 'Add a next steps slide' }],
+        documentText: '--- Slide 1 ---\n[Title 1] Board Deck',
+        hostContext: { layouts: [{ layoutName: 'Title and Content' }] },
+      }),
+    });
+    assert.equal(pptRes.status, 200);
+    assert.match(pptRes.body, /add_slide/);
+    assert.match(pptRes.body, /"host":"powerpoint"/);
+    assert.match(capturedBodies[1].payload.system, /Microsoft PowerPoint/);
+    assert.match(capturedBodies[1].payload.system, /<layouts>/);
+  } finally {
+    await srv.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

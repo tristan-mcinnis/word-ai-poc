@@ -5,17 +5,19 @@ REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG_DIR="$HOME/.config/word-poc"
 ENV_FILE="$CONFIG_DIR/.env"
 CONFIG_FILE="$CONFIG_DIR/config.json"
-WEF_DIR="$HOME/Library/Containers/com.microsoft.Word/Data/Documents/wef"
+WEF_WORD="$HOME/Library/Containers/com.microsoft.Word/Data/Documents/wef"
+WEF_EXCEL="$HOME/Library/Containers/com.microsoft.Excel/Data/Documents/wef"
+WEF_PPT="$HOME/Library/Containers/com.microsoft.Powerpoint/Data/Documents/wef"
 PLIST_LABEL="local.word-ai-poc"
 PLIST_PATH="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
 
 echo ""
-echo "Word AI Editor — macOS Installer"
-echo "================================"
+echo "Office AI Editor — macOS Installer (Word, Excel & PowerPoint)"
+echo "============================================================="
 echo ""
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
-  echo "This installer currently supports macOS Microsoft Word."
+  echo "This installer currently supports macOS Microsoft Office (Word, Excel, PowerPoint)."
   echo "On other platforms, run 'npm install && npx office-addin-dev-certs install && npm start' and sideload manifest.xml."
   exit 1
 fi
@@ -36,15 +38,17 @@ echo "1/5  Installing dependencies..."
 (cd "$REPO_DIR" && npm install --no-audit --no-fund)
 
 echo ""
-echo "2/5  Installing local HTTPS dev certificate for Word..."
+echo "2/5  Installing local HTTPS dev certificate for Office..."
 echo "     (macOS may ask for your login password to trust localhost.)"
 (cd "$REPO_DIR" && npx office-addin-dev-certs install)
 
 echo ""
-echo "3/5  Sideloading Word add-in manifest..."
-mkdir -p "$WEF_DIR"
-cp "$REPO_DIR/manifest.xml" "$WEF_DIR/word-ai-poc.xml"
-echo "     Copied to $WEF_DIR/word-ai-poc.xml"
+echo "3/5  Sideloading add-in manifest to Word, Excel, and PowerPoint..."
+for WEF_DIR in "$WEF_WORD" "$WEF_EXCEL" "$WEF_PPT"; do
+  mkdir -p "$WEF_DIR"
+  cp "$REPO_DIR/manifest.xml" "$WEF_DIR/word-ai-poc.xml"
+  echo "     Copied to $WEF_DIR/word-ai-poc.xml"
+done
 
 echo ""
 echo "4/5  Configuring your AI provider & API key (stored locally in $ENV_FILE, chmod 600)..."
@@ -91,7 +95,6 @@ EOF
   read -r -s -p "     Paste your $ENV_KEY (hidden, or press Enter to skip): " API_KEY || API_KEY=""
   echo ""
   if [[ -n "$API_KEY" ]]; then
-    # Replace existing entry for ENV_KEY if present, then append
     grep -v "^${ENV_KEY}=" "$ENV_FILE" > "${ENV_FILE}.tmp" || true
     printf '%s=%s\n' "$ENV_KEY" "$API_KEY" >> "${ENV_FILE}.tmp"
     mv "${ENV_FILE}.tmp" "$ENV_FILE"
@@ -144,10 +147,10 @@ fi
 
 echo ""
 echo "Done! Next steps:"
-echo "  1. Open (or restart) Microsoft Word."
+echo "  1. Open (or restart) Microsoft Word, Excel, or PowerPoint."
 echo "  2. Go to Home -> Add-ins -> Developer Add-ins -> AI Editor."
-echo "  3. Chat about your document, or select text to edit it in place."
+echo "  3. Chat about your document, workbook, or presentation and apply edits in one click."
 echo ""
-echo "To add more API keys later, edit: $ENV_FILE"
+echo "To add more API keys later, click Keys in the sidebar or edit: $ENV_FILE"
 echo "To uninstall, run: $REPO_DIR/uninstall.sh"
 echo ""

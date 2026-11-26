@@ -11,6 +11,12 @@
 <header id="topbar">
   <div class="brand">
     <h1>AI Editor</h1>
+    <span id="host-badge" class="host-badge" hidden></span>
+    <select id="preview-host" class="preview-host" hidden title="Preview host mode (outside Office)" aria-label="Preview host">
+      <option value="word">Word</option>
+      <option value="excel">Excel</option>
+      <option value="powerpoint">PowerPoint</option>
+    </select>
   </div>
   <div class="header-actions">
     <button id="keys-btn" class="icon-pill" title="Manage local API keys">
@@ -55,11 +61,11 @@
 
   <div id="composer-card">
     <div id="context-row">
-      <button id="context-pill" type="button" title="Click to switch context scope (Auto / Selection only / Whole doc)">
+      <button id="context-pill" type="button" title="Click to switch context scope">
         <span id="context-badge"></span>
         <span id="context-preview"></span>
       </button>
-      <button id="refresh" type="button" class="micro-btn" title="Refresh document & selection">
+      <button id="refresh" type="button" class="micro-btn" title="Refresh context">
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.4-3.65M13.5 2.5v2.4h-2.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
     </div>
@@ -72,8 +78,8 @@
         <button id="actions-btn" type="button" class="tool-btn" title="Quick workflows & actions (or type /)">
           <span>/</span>
         </button>
-        <button id="track-btn" type="button" class="tool-btn" title="Toggle Word Track Changes (native redlining)">
-          <span>Track</span>
+        <button id="secondary-btn" type="button" class="tool-btn" hidden>
+          <span></span>
         </button>
         <button id="mode-btn" type="button" class="tool-btn" title="Edit permission: Ask before edits vs Auto-apply">
           <span>Ask</span>

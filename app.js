@@ -1,51 +1,69 @@
-/* global Office, Word */
+/* global Office */
 import {
   parseAssistantReply,
   actionLabel,
   primaryButtonLabel,
+  isDestructiveAction,
   renderMarkdown,
   renderDiffHtml,
-  countWords,
+  escapeHtml,
 } from './lib/format.js';
+import { parseCellGrid, parseFormatSpec } from './lib/excel-utils.js';
+import { parseSlideSpec, parseSlideRef } from './lib/ppt-utils.js';
+import { detectOfficeHost, createHostAdapter } from './lib/hosts/index.js';
 
 const $ = id => document.getElementById(id);
-
-const QUICK_ACTIONS = [
-  { cmd: '/copy-edit', title: 'Copy-edit document', prompt: 'Copy-edit this document for typos, grammar, wordiness, and awkward phrasing. Propose targeted edits using replace_match.' },
-  { cmd: '/check-doc', title: 'Check document', prompt: 'Audit the whole document for structure, clarity, inconsistencies, undefined terms, and gaps. Give me a prioritised read before making edits.' },
-  { cmd: '/work-comments', title: 'Work through comments', prompt: 'Work through all open Word comments in this document. For each comment, propose the exact text edit using replace_match and a reply_comment explaining what you changed.' },
-  { cmd: '/tighten', title: 'Tighten', prompt: 'Tighten this. Remove filler and hedging while keeping the meaning and voice.' },
-  { cmd: '/shorten', title: 'Shorten', prompt: 'Shorten this by about a third, keeping every key fact.' },
-  { cmd: '/rewrite', title: 'Rewrite clearly', prompt: 'Rewrite this so it reads clearly and directly, same meaning and approximate length.' },
-  { cmd: '/plain', title: 'Plain language', prompt: 'Rewrite in plain language: short sentences, common words, one idea each.' },
-  { cmd: '/bullets', title: 'Turn into bullets', prompt: 'Turn this into a crisp bullet list, one idea per bullet.' },
-  { cmd: '/zh', title: 'Translate to Chinese (below)', prompt: 'Translate this into natural Chinese and insert it directly underneath.' },
-  { cmd: '/en', title: 'Translate to English (below)', prompt: 'Translate this into natural English and insert it directly underneath.' },
-  { cmd: '/summarise', title: 'Summarise', prompt: 'Summarise the main points concisely.' },
-  { cmd: '/comment', title: 'Add Word comment', prompt: 'Write a short, concrete editorial review comment on this passage as a Word comment.' },
-];
-
 const CONTEXT_MODES = ['auto', 'selection', 'document'];
 
 const state = {
-  inWord: false,
+  inOffice: false,
+  hostId: 'word',
+  adapter: createHostAdapter('word'),
   messages: [],          // { role, content } sent to the model
-  selectionText: '',     // current Word selection
-  documentText: '',      // full Word document body text
-  comments: [],          // open Word comments: { id, author, content, anchor }
+  selectionText: '',
+  documentText: '',
+  comments: [],
+  hostContext: {},       // host-specific structured metadata (sheets/errors for Excel, slides/layouts for PPT)
   contextMode: 'auto',   // 'auto' | 'selection' | 'document'
-  trackChanges: false,   // synced with Word native changeTrackingMode (WordApi 1.5+)
-  autoApply: false,      // false = Ask before edits, true = Always allow
+  trackChanges: false,   // Word native Track Changes
+  highlightEdits: false, // Excel yellow tint on AI-edited cells
+  autoApply: false,      // false = Ask before edits, true = Always allow (non-destructive)
   controller: null,
   readTimer: null,
   reading: false,
   toastTimer: null,
   menuOpen: false,
   menuIndex: 0,
-  filteredActions: QUICK_ACTIONS,
+  filteredActions: [],
   userScrolledUp: false,
   keyInfo: null,
+  lastPrompt: '',
 };
+
+/* ---------- Utilities ---------- */
+
+async function copyTextSafe(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {}
+  // Fallback for sandboxed WKWebView inside Office on macOS
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}
 
 /* ---------- Toast notifications ---------- */
 
@@ -65,110 +83,89 @@ $('toast-close').onclick = () => {
   $('toast').hidden = true;
 };
 
-/* ---------- Document & selection reading ---------- */
+/* ---------- Host UI & Context reading ---------- */
+
+function updateHostChrome() {
+  const badge = $('host-badge');
+  const previewSelect = $('preview-host');
+  if (state.inOffice) {
+    badge.textContent = state.adapter.label;
+    badge.className = `host-badge host-${state.hostId}`;
+    badge.hidden = false;
+    previewSelect.hidden = true;
+  } else {
+    badge.hidden = true;
+    previewSelect.value = state.hostId;
+    previewSelect.hidden = false;
+  }
+  $('input').placeholder = state.adapter.placeholder;
+  state.filteredActions = state.adapter.quickActions;
+  updateToolbarToggles();
+  updateContextUI();
+}
 
 function updateToolbarToggles() {
-  const trackBtn = $('track-btn');
-  trackBtn.classList.toggle('active', state.trackChanges);
-  trackBtn.title = state.trackChanges
-    ? 'Track Changes is ON (edits appear as native Word redlines)'
-    : 'Track Changes is OFF (click to enable native Word redlines)';
+  const secBtn = $('secondary-btn');
+  const toggleCfg = state.adapter.secondaryToggle;
+  if (toggleCfg) {
+    const isOn = Boolean(state[toggleCfg.key]);
+    secBtn.hidden = false;
+    secBtn.classList.toggle('active', isOn);
+    secBtn.querySelector('span').textContent = toggleCfg.label;
+    secBtn.title = isOn ? toggleCfg.titleOn : toggleCfg.titleOff;
+  } else {
+    secBtn.hidden = true;
+  }
 
   const modeBtn = $('mode-btn');
   modeBtn.classList.toggle('active', state.autoApply);
   modeBtn.querySelector('span').textContent = state.autoApply ? 'Auto' : 'Ask';
   modeBtn.title = state.autoApply
-    ? 'Auto-apply ON: edits apply directly to Word'
+    ? `Auto-apply ON: non-destructive edits apply directly to ${state.adapter.label}`
     : 'Ask before edits: review and click Allow on each edit';
 }
 
 function updateContextUI() {
+  const info = state.adapter.formatContextBadge(
+    {
+      selectionText: state.selectionText,
+      documentText: state.documentText,
+      comments: state.comments,
+      hostContext: state.hostContext,
+    },
+    state.contextMode,
+  );
   const badge = $('context-badge');
   const preview = $('context-preview');
-  const selClean = state.selectionText.replace(/\s+/g, ' ').trim();
-  const docWords = countWords(state.documentText);
-  const openComments = state.comments.length;
-  const commentSuffix = openComments ? ` · ${openComments} comment${openComments === 1 ? '' : 's'}` : '';
-
-  if (state.contextMode === 'selection') {
-    badge.textContent = selClean ? `Selection · ${selClean.length}c` : 'Selection only';
-    badge.classList.toggle('has-selection', Boolean(selClean));
-    preview.textContent = selClean ? selClean.slice(0, 80) : 'Select text in Word';
-  } else if (state.contextMode === 'document') {
-    badge.textContent = `Whole doc · ${docWords}w`;
-    badge.classList.remove('has-selection');
-    preview.textContent = docWords ? `Full document attached${commentSuffix}` : 'Document is empty';
-  } else {
-    // Auto: full doc in background + active selection highlighted
-    if (selClean) {
-      badge.textContent = `Selection · ${selClean.length}c`;
-      badge.classList.add('has-selection');
-      preview.textContent = selClean.slice(0, 80);
-    } else {
-      badge.textContent = docWords ? `Document · ${docWords}w` : 'Document';
-      badge.classList.remove('has-selection');
-      preview.textContent = docWords ? `Full doc attached${commentSuffix}` : 'Start typing in Word';
-    }
-  }
+  badge.textContent = info.badge;
+  badge.classList.toggle('has-selection', Boolean(info.hasSelection));
+  preview.textContent = info.preview;
 
   if (state.messages.length === 0) renderEmptyState();
 }
 
-async function readWordContext() {
-  if (!state.inWord || state.reading) return;
+async function readHostContext() {
+  if (!state.inOffice || state.reading) return;
   state.reading = true;
   try {
-    await Word.run(async ctx => {
-      const sel = ctx.document.getSelection();
-      const body = ctx.document.body;
-      sel.load('text');
-      body.load('text');
-      const canTrack = Office.context.requirements && Office.context.requirements.isSetSupported('WordApi', '1.5');
-      if (canTrack) ctx.document.load('changeTrackingMode');
-      await ctx.sync();
+    const snapshot = await state.adapter.readContext();
+    if (!snapshot) return;
 
-      let changed = sel.text !== state.selectionText || body.text !== state.documentText;
-      state.selectionText = sel.text || '';
-      state.documentText = body.text || '';
+    const prevSig = `${state.selectionText.length}|${state.documentText.length}|${state.comments.length}|${JSON.stringify(state.hostContext)}`;
+    state.selectionText = snapshot.selectionText || '';
+    state.documentText = snapshot.documentText || '';
+    state.comments = snapshot.comments || [];
+    state.hostContext = snapshot.hostContext || {};
 
-      if (canTrack && ctx.document.changeTrackingMode) {
-        const isOn = ctx.document.changeTrackingMode !== Word.ChangeTrackingMode.off;
-        if (isOn !== state.trackChanges) {
-          state.trackChanges = isOn;
-          updateToolbarToggles();
-        }
-      }
+    if (typeof snapshot.trackChanges === 'boolean' && snapshot.trackChanges !== state.trackChanges) {
+      state.trackChanges = snapshot.trackChanges;
+      updateToolbarToggles();
+    }
 
-      // Read open Word comments (WordApi 1.4+)
-      try {
-        if (typeof body.getComments === 'function') {
-          const commentsCol = body.getComments();
-          commentsCol.load('items/id,items/content,items/authorName,items/resolved');
-          await ctx.sync();
-          const openItems = commentsCol.items.filter(c => !c.resolved).slice(0, 30);
-          const ranges = openItems.map(c => {
-            const r = c.getRange();
-            r.load('text');
-            return r;
-          });
-          if (ranges.length) await ctx.sync();
-          const nextComments = openItems.map((c, idx) => ({
-            id: c.id,
-            author: c.authorName || 'Reviewer',
-            content: c.content || '',
-            anchor: (ranges[idx]?.text || '').trim(),
-          }));
-          if (nextComments.length !== state.comments.length) changed = true;
-          state.comments = nextComments;
-        }
-      } catch {
-        // Comments API unavailable on older Word builds; ignore silently.
-      }
-
-      if (changed) updateContextUI();
-    });
+    const nextSig = `${state.selectionText.length}|${state.documentText.length}|${state.comments.length}|${JSON.stringify(state.hostContext)}`;
+    if (prevSig !== nextSig) updateContextUI();
   } catch {
-    // Word selection changes can fire mid-sync; the next event catches up.
+    // Office selection changes can fire mid-sync; the next event catches up.
   } finally {
     state.reading = false;
   }
@@ -176,45 +173,80 @@ async function readWordContext() {
 
 function scheduleRead() {
   clearTimeout(state.readTimer);
-  state.readTimer = setTimeout(readWordContext, 250);
-}
-
-function watchSelection() {
-  try {
-    Office.context.document.addHandlerAsync(Office.EventType.DocumentSelectionChanged, scheduleRead, result => {
-      if (result.status !== Office.AsyncResultStatus.Succeeded) {
-        showToast('Auto-selection unavailable here. Use the refresh icon after selecting.');
-      }
-    });
-  } catch {
-    showToast('Auto-selection unavailable here. Use the refresh icon after selecting.');
-  }
-  readWordContext();
+  state.readTimer = setTimeout(readHostContext, 250);
 }
 
 $('refresh').onclick = async () => {
-  await readWordContext();
-  showToast('Document context refreshed.', false, 1800);
+  await readHostContext();
+  showToast(`${state.adapter.label} context refreshed.`, false, 1800);
 };
 
 $('context-pill').onclick = () => {
   const idx = CONTEXT_MODES.indexOf(state.contextMode);
   state.contextMode = CONTEXT_MODES[(idx + 1) % CONTEXT_MODES.length];
   updateContextUI();
-  const labels = {
-    auto: 'Context: Auto (whole doc + selection)',
-    selection: 'Context: Selection only',
-    document: 'Context: Whole document',
-  };
-  showToast(labels[state.contextMode], false, 2000);
+  showToast(state.adapter.modeLabels[state.contextMode] || `Context: ${state.contextMode}`, false, 2000);
 };
 
-/* ---------- Smart auto-scroll ---------- */
+$('secondary-btn').onclick = async () => {
+  const toggleCfg = state.adapter.secondaryToggle;
+  if (!toggleCfg || !state.adapter.toggleSecondary) return;
+  const next = !state[toggleCfg.key];
+  try {
+    const res = await state.adapter.toggleSecondary(next);
+    state[toggleCfg.key] = Boolean(res.value);
+    updateToolbarToggles();
+    if (res.message) showToast(res.message, false, 2200);
+  } catch (e) {
+    showToast(e.message || String(e), true);
+  }
+};
+
+$('mode-btn').onclick = () => {
+  state.autoApply = !state.autoApply;
+  updateToolbarToggles();
+  showToast(
+    state.autoApply ? `Auto-apply ON · edits apply directly to ${state.adapter.label}` : 'Ask before edits ON',
+    false,
+    2000,
+  );
+};
+
+$('preview-host').onchange = () => {
+  if (state.inOffice) return;
+  const nextHost = $('preview-host').value;
+  state.hostId = nextHost;
+  state.adapter = createHostAdapter(nextHost);
+  state.selectionText = '';
+  state.documentText = '';
+  state.comments = [];
+  state.hostContext = {};
+  closeActionsMenu();
+  updateHostChrome();
+  if (state.messages.length === 0) renderEmptyState();
+  showToast(`Previewing ${state.adapter.label} mode`, false, 1800);
+};
+
+/* ---------- Smart auto-scroll & citation navigation ---------- */
 
 const transcriptEl = $('transcript');
 transcriptEl.addEventListener('scroll', () => {
   const distFromBottom = transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight;
   state.userScrolledUp = distFromBottom > 60;
+});
+
+transcriptEl.addEventListener('click', async e => {
+  const chip = e.target.closest('.ref-chip');
+  if (!chip) return;
+  const ref = chip.dataset.ref;
+  if (!ref || !state.adapter.navigateToRef) return;
+  try {
+    const res = await state.adapter.navigateToRef(ref);
+    if (res?.message) showToast(res.message, !res.ok, 2000);
+    if (res?.ok) scheduleRead();
+  } catch (err) {
+    showToast(err.message || String(err), true);
+  }
 });
 
 function scrollToBottom(force = false) {
@@ -227,33 +259,18 @@ function scrollToBottom(force = false) {
 
 function renderEmptyState() {
   if (state.messages.length > 0) return;
-  const hasSelection = Boolean(state.selectionText.trim());
-  const docWords = countWords(state.documentText);
-
-  const starters = hasSelection
-    ? [
-        { title: 'Talk through how to improve this', sub: 'Critique and ideas before rewriting', prompt: 'What do you think of the selected passage? Point out what works, what feels weak, and how you would sharpen it before we rewrite.' },
-        { title: 'Tighten this passage', sub: 'Cut filler while keeping your voice', prompt: 'Tighten the selected passage. Remove filler and hedging, keep the meaning.' },
-        { title: 'Translate to Chinese below', sub: 'Insert natural Chinese underneath', prompt: 'Translate the selected passage into natural Chinese and insert it directly underneath.' },
-        { title: 'Explore alternative angles', sub: '2–3 different ways to frame this', prompt: 'Give me 2 or 3 different ways to frame the selected passage, and tell me which one you think lands best.' },
-      ]
-    : [
-        { title: 'Think through this document', sub: 'Honest read on structure, gaps, and flow', prompt: 'Read the document and give me your honest take on the structure, clarity, and what is missing or could be stronger. Just chat with me first before making edits.' },
-        { title: 'Where should I edit first?', sub: 'Prioritised list of highest-impact fixes', prompt: 'If we only had 5 minutes to improve this document, which 2 or 3 spots would you fix first and why?' },
-        { title: 'Summarise the main argument', sub: 'Quick read on what it actually says', prompt: 'Summarise what this document currently says in 3 crisp bullets, and flag anything that feels unclear.' },
-        { title: 'Draft the next section', sub: 'Continue naturally in the same voice', prompt: 'Based on the document so far, draft a concise next paragraph to append at the end.' },
-      ];
-
-  const subtitle = hasSelection
-    ? `Selection attached (${state.selectionText.trim().length} chars) · Ask a question or describe an edit.`
-    : docWords
-      ? `Reading your document (${docWords} words) · Ask anything or select text to focus.`
-      : 'Chat about your document, or select any text to edit it in place.';
+  const { heading, subtitle, starters } = state.adapter.getStarters({
+    selectionText: state.selectionText,
+    documentText: state.documentText,
+    comments: state.comments,
+    hostContext: state.hostContext,
+  });
 
   transcriptEl.innerHTML = '';
   const wrap = document.createElement('div');
   wrap.className = 'empty-state';
-  wrap.innerHTML = `<div class="empty-head"><h2>What are we working on?</h2><p></p></div><div class="starter-grid"></div>`;
+  wrap.innerHTML = `<div class="empty-head"><h2></h2><p></p></div><div class="starter-grid"></div>`;
+  wrap.querySelector('h2').textContent = heading;
   wrap.querySelector('p').textContent = subtitle;
 
   const grid = wrap.querySelector('.starter-grid');
@@ -270,229 +287,63 @@ function renderEmptyState() {
   transcriptEl.appendChild(wrap);
 }
 
-/* ---------- Writing edits back to Word ---------- */
-
-function splitParagraphs(text) {
-  return String(text).replace(/\r\n?/g, '\n').split('\n').filter((line, idx, arr) => {
-    // Keep intentional blank lines inside multi-paragraph text, trim only leading/trailing empty
-    if (idx === 0 || idx === arr.length - 1) return line.trim().length > 0;
-    return true;
-  });
-}
-
-async function findMatchingRange(ctx, snippet) {
-  const clean = String(snippet || '').trim();
-  if (!clean) return null;
-
-  // Word's body.search() has a 255-character limit and works best on single-line matches.
-  if (clean.length <= 240 && !/[\r\n]/.test(clean)) {
-    const results = ctx.document.body.search(clean, { matchCase: true });
-    results.load('items');
-    await ctx.sync();
-    if (results.items.length > 0) return results.items[0];
-  }
-
-  // Fallback: match against paragraph text directly (supports single AND multi-paragraph ranges)
-  const paras = ctx.document.body.paragraphs;
-  paras.load('items/text');
-  await ctx.sync();
-
-  const normalizedTarget = clean.replace(/\s+/g, ' ');
-  for (const p of paras.items) {
-    const pNorm = (p.text || '').replace(/\s+/g, ' ').trim();
-    if (pNorm && (pNorm === normalizedTarget || pNorm.includes(normalizedTarget))) {
-      return p.getRange();
-    }
-  }
-
-  // Multi-paragraph span match: check consecutive non-empty paragraphs
-  const snippetLines = clean.split(/[\r\n]+/).map(s => s.replace(/\s+/g, ' ').trim()).filter(Boolean);
-  if (snippetLines.length >= 2) {
-    const firstLine = snippetLines[0];
-    const lastLine = snippetLines[snippetLines.length - 1];
-    for (let i = 0; i < paras.items.length; i++) {
-      const startNorm = (paras.items[i].text || '').replace(/\s+/g, ' ').trim();
-      if (!startNorm || (!startNorm.includes(firstLine) && !firstLine.includes(startNorm))) continue;
-      for (let j = i; j < Math.min(paras.items.length, i + snippetLines.length + 4); j++) {
-        const endNorm = (paras.items[j].text || '').replace(/\s+/g, ' ').trim();
-        if (endNorm && (endNorm.includes(lastLine) || lastLine.includes(endNorm))) {
-          return paras.items[i].getRange().expandTo(paras.items[j].getRange());
-        }
-      }
-    }
-  }
-
-  return null;
-}
-
-async function setWordTrackChanges(enabled) {
-  if (!state.inWord) {
-    state.trackChanges = enabled;
-    updateToolbarToggles();
-    return;
-  }
-  try {
-    await Word.run(async ctx => {
-      if (!Office.context.requirements || !Office.context.requirements.isSetSupported('WordApi', '1.5')) {
-        throw new Error('This Word version does not support toggling Track Changes from add-ins. Toggle it in the Review tab.');
-      }
-      ctx.document.changeTrackingMode = enabled ? Word.ChangeTrackingMode.trackAll : Word.ChangeTrackingMode.off;
-      await ctx.sync();
-    });
-    state.trackChanges = enabled;
-    updateToolbarToggles();
-    showToast(enabled ? 'Track Changes ON · edits will show as redlines' : 'Track Changes OFF', false, 2200);
-  } catch (e) {
-    showToast(e.message || String(e), true);
-  }
-}
-
-$('track-btn').onclick = () => setWordTrackChanges(!state.trackChanges);
-$('mode-btn').onclick = () => {
-  state.autoApply = !state.autoApply;
-  updateToolbarToggles();
-  showToast(state.autoApply ? 'Auto-apply ON · edits apply directly' : 'Ask before edits ON', false, 2000);
-};
+/* ---------- Applying edits via active host adapter ---------- */
 
 async function applyEdit(edit, expectedSelection = '', overrideAction = null) {
-  const action = overrideAction || edit.action;
-  const content = (edit.content || '').trim();
-  if (!content) return false;
-
-  if (!state.inWord) {
-    showToast('Open inside Microsoft Word to apply edits directly.', true);
+  if (!state.inOffice) {
+    showToast(`Open inside Microsoft ${state.adapter.label} to apply edits directly.`, true);
     return false;
   }
 
   try {
-    await Word.run(async ctx => {
-      const sel = ctx.document.getSelection();
-      sel.load('text');
-      await ctx.sync();
-
-      if (action === 'append_doc') {
-        const lines = splitParagraphs(content);
-        for (const line of lines) {
-          ctx.document.body.insertParagraph(line, Word.InsertLocation.end);
-        }
-        await ctx.sync();
-        return;
-      }
-
-      if (action === 'comment') {
-        if (typeof sel.insertComment !== 'function') {
-          throw new Error('This version of Word does not support adding comments from add-ins.');
-        }
-        sel.insertComment(content);
-        await ctx.sync();
-        return;
-      }
-
-      if (action === 'reply_comment') {
-        if (typeof ctx.document.body.getComments !== 'function') {
-          throw new Error('This version of Word does not support replying to comments from add-ins.');
-        }
-        const commentsCol = ctx.document.body.getComments();
-        commentsCol.load('items/id');
-        await ctx.sync();
-        const targetComment = commentsCol.items.find(c => String(c.id) === String(edit.commentId));
-        if (!targetComment) {
-          throw new Error('Could not find that comment thread in the document.');
-        }
-        targetComment.reply(content);
-        await ctx.sync();
-        return;
-      }
-
-      if (action === 'replace_match') {
-        const target = await findMatchingRange(ctx, edit.find || expectedSelection || state.selectionText);
-        if (!target) {
-          throw new Error('Could not find the original passage in the document. Select it manually and use Replace.');
-        }
-        const lines = splitParagraphs(content);
-        target.insertText(lines[0], Word.InsertLocation.replace);
-        for (let i = lines.length - 1; i >= 1; i--) {
-          target.insertParagraph(lines[i], Word.InsertLocation.after);
-        }
-        await ctx.sync();
-        return;
-      }
-
-      if (action === 'insert_after' || action === 'insert_before') {
-        const lines = splitParagraphs(content);
-        if (action === 'insert_after') {
-          for (let i = lines.length - 1; i >= 0; i--) {
-            sel.insertParagraph(lines[i], Word.InsertLocation.after);
-          }
-        } else {
-          for (const line of lines) {
-            sel.insertParagraph(line, Word.InsertLocation.before);
-          }
-        }
-        await ctx.sync();
-        return;
-      }
-
-      // Default: replace_selection
-      let targetRange = sel;
-      const selText = (sel.text || '').trim();
-      const expectedClean = (expectedSelection || '').trim();
-      const fallbackClean = expectedClean || (state.selectionText || '').trim();
-
-      if (!selText || (expectedClean && sel.text !== expectedSelection)) {
-        if (fallbackClean) {
-          const located = await findMatchingRange(ctx, fallbackClean);
-          if (located) {
-            targetRange = located;
-          } else if (!selText) {
-            throw new Error('Could not locate the selected passage. Re-select it in Word or use Insert below.');
-          }
-        } else {
-          throw new Error('Nothing is selected in Word. Select text first, or use Insert below.');
-        }
-      }
-
-      const lines = splitParagraphs(content);
-      targetRange.insertText(lines[0], Word.InsertLocation.replace);
-      for (let i = lines.length - 1; i >= 1; i--) {
-        targetRange.insertParagraph(lines[i], Word.InsertLocation.after);
-      }
-      await ctx.sync();
+    const res = await state.adapter.applyEdit(edit, {
+      expectedSelection,
+      currentSelection: state.selectionText,
+      overrideAction,
+      trackChanges: state.trackChanges,
+      highlightEdits: state.highlightEdits,
     });
-
-    const suffix = state.trackChanges ? ' (tracked change)' : ' · Cmd+Z to undo';
-    const msgMap = {
-      replace_selection: `Replaced in document${suffix}`,
-      replace_match: `Edit applied${suffix}`,
-      insert_after: `Inserted below${suffix}`,
-      insert_before: `Inserted above${suffix}`,
-      append_doc: `Appended to document${suffix}`,
-      comment: 'Comment added in Word',
-      reply_comment: 'Posted reply to Word comment',
-    };
-    showToast(msgMap[action] || `Applied${suffix}`);
-    scheduleRead();
-    return true;
+    if (res?.ok) {
+      showToast(res.message || 'Applied');
+      scheduleRead();
+      return true;
+    }
+    showToast(res?.message || 'Could not apply edit.', true);
+    return false;
   } catch (e) {
     showToast(e.message || String(e), true);
     return false;
   }
 }
 
-/* ---------- Rendering conversation turns ---------- */
+/* ---------- Rendering conversation turns & rich edit cards ---------- */
 
-function addUserTurn(text, attachedSelection) {
+function addUserTurn(text, attachedSelection, hostContextSnapshot) {
   if (state.messages.length === 0) transcriptEl.innerHTML = '';
   const wrap = document.createElement('div');
   wrap.className = 'turn user';
 
-  const cleanSel = (attachedSelection || '').replace(/\s+/g, ' ').trim();
-  if (cleanSel && state.contextMode !== 'document') {
-    const tag = document.createElement('div');
-    tag.className = 'user-context-tag';
-    tag.textContent = `Selection: "${cleanSel.slice(0, 48)}${cleanSel.length > 48 ? '…' : ''}"`;
-    tag.title = attachedSelection;
-    wrap.appendChild(tag);
+  if (state.contextMode !== 'document') {
+    let tagLabel = '';
+    if (state.hostId === 'excel' && hostContextSnapshot?.selectionAddress) {
+      tagLabel = `Range: ${hostContextSnapshot.selectionAddress}`;
+    } else if (state.hostId === 'powerpoint' && hostContextSnapshot?.currentSlideIndex) {
+      tagLabel = hostContextSnapshot.selectedShapeName
+        ? `Slide ${hostContextSnapshot.currentSlideIndex} · ${hostContextSnapshot.selectedShapeName}`
+        : `Slide ${hostContextSnapshot.currentSlideIndex}`;
+    } else {
+      const cleanSel = (attachedSelection || '').replace(/\s+/g, ' ').trim();
+      if (cleanSel) {
+        tagLabel = `Selection: "${cleanSel.slice(0, 48)}${cleanSel.length > 48 ? '…' : ''}"`;
+      }
+    }
+    if (tagLabel) {
+      const tag = document.createElement('div');
+      tag.className = 'user-context-tag';
+      tag.textContent = tagLabel;
+      tag.title = attachedSelection || tagLabel;
+      wrap.appendChild(tag);
+    }
   }
 
   const bubble = document.createElement('div');
@@ -518,9 +369,131 @@ function createAssistantTurn() {
   return { wrap, body, meta, diffStates: new Map(), appliedSet: new Set() };
 }
 
-function buildEditCard(edit, index, turn, expectedSelection) {
+function lookupShapeBaseline(edit, hostContextSnapshot) {
+  const slides = hostContextSnapshot?.slides;
+  const attrs = edit.attrs || {};
+  if (Array.isArray(slides) && slides.length) {
+    const slideNum = parseSlideRef(attrs.slide) || hostContextSnapshot.currentSlideIndex || 1;
+    const slide = slides.find(s => s.index === slideNum);
+    if (slide && Array.isArray(slide.shapes)) {
+      if (attrs.shape) {
+        const q = attrs.shape.trim().toLowerCase();
+        const found = slide.shapes.find(sh =>
+          String(sh.id).toLowerCase() === q ||
+          String(sh.name || '').trim().toLowerCase() === q ||
+          String(sh.name || '').toLowerCase().includes(q),
+        );
+        if (found?.text) return found.text;
+      }
+    }
+  }
+  return hostContextSnapshot?.selectedShapeText || '';
+}
+
+function renderGridPreviewHtml(grid) {
+  const maxRows = 8;
+  const maxCols = 6;
+  const rows = grid.slice(0, maxRows);
+  const trs = rows.map(row => {
+    const cols = row.slice(0, maxCols);
+    const tds = cols.map(cell => {
+      const str = String(cell ?? '');
+      const cls = str.startsWith('=') ? ' class="is-formula"' : '';
+      return `<td${cls} title="${escapeHtml(str)}">${escapeHtml(str)}</td>`;
+    }).join('');
+    return `<tr>${tds}</tr>`;
+  }).join('');
+  const truncated = grid.length > maxRows || (grid[0]?.length || 0) > maxCols
+    ? `<div class="excel-preview-note">Showing ${rows.length}×${Math.min(maxCols, grid[0].length)} of ${grid.length}×${grid[0].length} cells</div>`
+    : '';
+  return `<div class="excel-preview-wrap"><table class="excel-preview-table"><tbody>${trs}</tbody></table>${truncated}</div>`;
+}
+
+function renderStructuredEditBody(bodyEl, edit) {
+  const action = edit.action;
+  const attrs = edit.attrs || {};
+
+  if (action === 'set_cells' || action === 'add_sheet' || action === 'add_table') {
+    const grid = parseCellGrid(edit.content);
+    if (grid.length > 0 && grid[0].length > 0) {
+      bodyEl.innerHTML = renderGridPreviewHtml(grid);
+      return true;
+    }
+    if (action === 'add_sheet') {
+      bodyEl.textContent = `Creates empty worksheet "${attrs.name || 'Summary'}"`;
+      return true;
+    }
+  }
+
+  if (action === 'set_formula') {
+    const formula = (edit.content || '').trim();
+    const pills = attrs.number_format ? `<div class="excel-preview-note">Format: ${escapeHtml(attrs.number_format)}</div>` : '';
+    bodyEl.innerHTML = `<div class="formula-preview">${escapeHtml(formula)}</div>${pills}`;
+    return true;
+  }
+
+  if (action === 'format_cells') {
+    const spec = parseFormatSpec(edit.content);
+    const entries = Object.entries(spec);
+    if (entries.length) {
+      bodyEl.innerHTML = `<div class="spec-pills">${entries.map(([k, v]) => `<span class="spec-pill">${escapeHtml(k)}: ${escapeHtml(String(v))}</span>`).join('')}</div>`;
+      return true;
+    }
+  }
+
+  if (action === 'add_chart') {
+    const pills = [
+      `Type: ${attrs.chart_type || 'ColumnClustered'}`,
+      attrs.range ? `Data: ${attrs.range}` : 'Data: selection',
+      attrs.title ? `Title: ${attrs.title}` : '',
+    ].filter(Boolean);
+    bodyEl.innerHTML = `<div class="spec-pills">${pills.map(p => `<span class="spec-pill">${escapeHtml(p)}</span>`).join('')}</div>`;
+    return true;
+  }
+
+  if (action === 'sort_range') {
+    const pills = [
+      attrs.range ? `Range: ${attrs.range}` : 'Selection',
+      `Column: ${attrs.column ?? '0'}`,
+      `Order: ${String(attrs.order || 'asc').toUpperCase()}`,
+    ];
+    bodyEl.innerHTML = `<div class="spec-pills">${pills.map(p => `<span class="spec-pill">${escapeHtml(p)}</span>`).join('')}</div>`;
+    return true;
+  }
+
+  if (action === 'clear_range') {
+    bodyEl.textContent = `Clears cell contents in ${attrs.range || attrs.cell || 'selected range'}.`;
+    return true;
+  }
+
+  if (action === 'add_slide') {
+    const spec = parseSlideSpec(edit.content);
+    const pieces = [];
+    if (spec.title) pieces.push(`<div class="slide-preview-title">${escapeHtml(spec.title)}</div>`);
+    if (spec.subtitle) pieces.push(`<div class="slide-preview-sub">${escapeHtml(spec.subtitle)}</div>`);
+    if (spec.bullets.length) {
+      pieces.push(`<ul class="slide-preview-bullets">${spec.bullets.map(b => `<li>${escapeHtml(b)}</li>`).join('')}</ul>`);
+    } else if (spec.body) {
+      pieces.push(`<div class="slide-preview-sub">${escapeHtml(spec.body)}</div>`);
+    }
+    if (pieces.length) {
+      bodyEl.innerHTML = `<div class="slide-preview">${pieces.join('')}</div>`;
+      return true;
+    }
+  }
+
+  if (action === 'delete_slide') {
+    bodyEl.textContent = `Permanently deletes Slide ${attrs.slide || '(current)'} from the presentation (Cmd+Z to undo).`;
+    return true;
+  }
+
+  return false;
+}
+
+function buildEditCard(edit, index, turn, expectedSelection, hostContextSnapshot) {
   const card = document.createElement('div');
-  card.className = 'edit-card';
+  const destructive = isDestructiveAction(edit.action);
+  card.className = 'edit-card' + (destructive ? ' danger' : '');
   if (turn.appliedSet.has(index)) card.classList.add('applied');
 
   const head = document.createElement('div');
@@ -528,14 +501,17 @@ function buildEditCard(edit, index, turn, expectedSelection) {
 
   const badge = document.createElement('span');
   badge.className = 'edit-badge';
-  badge.textContent = actionLabel(edit.action, edit.label);
+  badge.textContent = actionLabel(edit.action, edit.label, edit.attrs);
   head.appendChild(badge);
 
-  const baselineText = edit.action === 'replace_match'
-    ? edit.find
-    : edit.action === 'replace_selection'
-      ? expectedSelection
-      : '';
+  let baselineText = '';
+  if (edit.action === 'replace_match' || edit.action === 'replace_slide_text') {
+    baselineText = edit.find;
+  } else if (edit.action === 'replace_selection') {
+    baselineText = expectedSelection;
+  } else if (edit.action === 'update_shape') {
+    baselineText = lookupShapeBaseline(edit, hostContextSnapshot);
+  }
   const canDiff = Boolean(baselineText && baselineText.trim() && edit.content.trim() && !edit.streaming);
 
   let diffBtn = null;
@@ -550,7 +526,7 @@ function buildEditCard(edit, index, turn, expectedSelection) {
 
   card.appendChild(head);
 
-  if (edit.action === 'replace_match' && edit.find && !turn.diffStates.get(index)) {
+  if ((edit.action === 'replace_match' || edit.action === 'replace_slide_text') && edit.find && !turn.diffStates.get(index)) {
     const findLine = document.createElement('div');
     findLine.className = 'edit-find-preview';
     findLine.textContent = `Replacing: "${edit.find.replace(/\s+/g, ' ').trim()}"`;
@@ -564,6 +540,8 @@ function buildEditCard(edit, index, turn, expectedSelection) {
   const renderCardBody = () => {
     if (canDiff && turn.diffStates.get(index)) {
       body.innerHTML = renderDiffHtml(baselineText, edit.content);
+    } else if (!edit.streaming && renderStructuredEditBody(body, edit)) {
+      // Rendered rich Excel/PowerPoint preview
     } else {
       body.textContent = edit.content || (edit.streaming ? 'Writing…' : '');
     }
@@ -585,23 +563,27 @@ function buildEditCard(edit, index, turn, expectedSelection) {
     const foot = document.createElement('div');
     foot.className = 'edit-card-foot';
 
+    let alwaysBtn = null;
+
     const primary = document.createElement('button');
     primary.type = 'button';
-    primary.className = 'btn-primary' + (turn.appliedSet.has(index) ? ' done' : '');
+    primary.className = 'btn-primary' + (destructive ? ' btn-danger' : '') + (turn.appliedSet.has(index) ? ' done' : '');
     primary.textContent = turn.appliedSet.has(index) ? 'Applied ✓' : primaryButtonLabel(edit.action);
     primary.onclick = async () => {
       const ok = await applyEdit(edit, expectedSelection);
       if (ok) {
         turn.appliedSet.add(index);
         card.classList.add('applied');
+        primary.classList.remove('btn-danger');
         primary.classList.add('done');
         primary.textContent = 'Applied ✓';
+        if (alwaysBtn) alwaysBtn.remove();
       }
     };
     foot.appendChild(primary);
 
-    if (!state.autoApply && !turn.appliedSet.has(index)) {
-      const alwaysBtn = document.createElement('button');
+    if (!state.autoApply && !destructive && !turn.appliedSet.has(index)) {
+      alwaysBtn = document.createElement('button');
       alwaysBtn.type = 'button';
       alwaysBtn.className = 'btn-secondary';
       alwaysBtn.textContent = 'Always allow';
@@ -630,24 +612,23 @@ function buildEditCard(edit, index, turn, expectedSelection) {
         if (ok) {
           turn.appliedSet.add(index);
           card.classList.add('applied');
+          if (alwaysBtn) alwaysBtn.remove();
         }
       };
       foot.appendChild(insertBtn);
     }
 
-    const copyBtn = document.createElement('button');
-    copyBtn.type = 'button';
-    copyBtn.className = 'btn-secondary';
-    copyBtn.textContent = 'Copy';
-    copyBtn.onclick = async () => {
-      try {
-        await navigator.clipboard.writeText(edit.content);
-        showToast('Copied to clipboard.', false, 1800);
-      } catch {
-        showToast('Copy failed.', true);
-      }
-    };
-    foot.appendChild(copyBtn);
+    if (edit.content && edit.content.trim()) {
+      const copyBtn = document.createElement('button');
+      copyBtn.type = 'button';
+      copyBtn.className = 'btn-secondary';
+      copyBtn.textContent = 'Copy';
+      copyBtn.onclick = async () => {
+        const ok = await copyTextSafe(edit.content);
+        showToast(ok ? 'Copied to clipboard.' : 'Copy failed.', !ok, 1800);
+      };
+      foot.appendChild(copyBtn);
+    }
 
     card.appendChild(foot);
   }
@@ -655,7 +636,7 @@ function buildEditCard(edit, index, turn, expectedSelection) {
   return card;
 }
 
-function renderAssistantTurn(turn, text, expectedSelection, isFinal = false, metaLabel = '') {
+function renderAssistantTurn(turn, text, expectedSelection, hostContextSnapshot, isFinal = false, metaLabel = '', canRetry = false) {
   const parts = parseAssistantReply(text);
   turn.body.innerHTML = '';
 
@@ -671,39 +652,48 @@ function renderAssistantTurn(turn, text, expectedSelection, isFinal = false, met
     if (part.kind === 'prose') {
       const prose = document.createElement('div');
       prose.className = 'prose';
-      prose.innerHTML = renderMarkdown(part.text);
+      prose.innerHTML = renderMarkdown(part.text, { host: state.hostId });
       turn.body.appendChild(prose);
     } else if (part.kind === 'edit') {
       const idx = editIndex++;
       edits.push({ edit: part, idx });
-      turn.body.appendChild(buildEditCard(part, idx, turn, expectedSelection));
+      turn.body.appendChild(buildEditCard(part, idx, turn, expectedSelection, hostContextSnapshot));
     }
   }
 
-  if (isFinal && edits.length >= 2) {
-    const bar = document.createElement('div');
-    bar.className = 'apply-all-bar';
-    const allBtn = document.createElement('button');
-    allBtn.type = 'button';
-    allBtn.className = 'btn-primary';
-    allBtn.textContent = `Apply all (${edits.length})`;
-    allBtn.onclick = async () => {
-      let appliedCount = 0;
-      for (const { edit, idx } of edits) {
-        if (turn.appliedSet.has(idx)) continue;
-        const ok = await applyEdit(edit, expectedSelection);
-        if (ok) {
-          turn.appliedSet.add(idx);
-          appliedCount++;
+  const safeEdits = edits.filter(({ edit }) => !isDestructiveAction(edit.action));
+  if (isFinal && safeEdits.length >= 2) {
+    const remaining = safeEdits.filter(({ idx }) => !turn.appliedSet.has(idx));
+    if (remaining.length > 0) {
+      const bar = document.createElement('div');
+      bar.className = 'apply-all-bar';
+      const allBtn = document.createElement('button');
+      allBtn.type = 'button';
+      allBtn.className = 'btn-primary';
+      allBtn.textContent = `Apply all (${remaining.length})`;
+      allBtn.onclick = async () => {
+        let appliedCount = 0;
+        let failedCount = 0;
+        for (const { edit, idx } of remaining) {
+          if (turn.appliedSet.has(idx)) continue;
+          const ok = await applyEdit(edit, expectedSelection);
+          if (ok) {
+            turn.appliedSet.add(idx);
+            appliedCount++;
+          } else {
+            failedCount++;
+          }
         }
-      }
-      if (appliedCount > 0) {
-        renderAssistantTurn(turn, text, expectedSelection, true, metaLabel);
-        showToast(`Applied ${appliedCount} edit${appliedCount === 1 ? '' : 's'} · Cmd+Z to undo`);
-      }
-    };
-    bar.appendChild(allBtn);
-    turn.body.appendChild(bar);
+        renderAssistantTurn(turn, text, expectedSelection, hostContextSnapshot, true, metaLabel);
+        if (appliedCount > 0 && failedCount === 0) {
+          showToast(`Applied ${appliedCount} edit${appliedCount === 1 ? '' : 's'} · Cmd+Z to undo`);
+        } else if (appliedCount > 0 && failedCount > 0) {
+          showToast(`Applied ${appliedCount}, ${failedCount} failed — check individual cards.`, true);
+        }
+      };
+      bar.appendChild(allBtn);
+      turn.body.appendChild(bar);
+    }
   }
 
   if (isFinal) {
@@ -711,19 +701,29 @@ function renderAssistantTurn(turn, text, expectedSelection, isFinal = false, met
     turn.meta.innerHTML = '';
     const left = document.createElement('span');
     left.textContent = metaLabel;
+    const actions = document.createElement('div');
+    actions.className = 'meta-actions';
+
+    if (canRetry && state.lastPrompt) {
+      const retryBtn = document.createElement('button');
+      retryBtn.type = 'button';
+      retryBtn.className = 'meta-btn';
+      retryBtn.textContent = 'Retry';
+      retryBtn.onclick = () => sendTurn(state.lastPrompt);
+      actions.appendChild(retryBtn);
+    }
+
     const copyAll = document.createElement('button');
     copyAll.type = 'button';
     copyAll.className = 'meta-btn';
     copyAll.textContent = 'Copy reply';
     copyAll.onclick = async () => {
-      try {
-        await navigator.clipboard.writeText(text.replace(/<\/?(?:edit[^>]*|replacement|find|content)>/gi, '').trim());
-        showToast('Reply copied.', false, 1600);
-      } catch {
-        showToast('Copy failed.', true);
-      }
+      const plain = text.replace(/<\/?(?:edit[^>]*|replacement|find|content)>/gi, '').trim();
+      const ok = await copyTextSafe(plain);
+      showToast(ok ? 'Reply copied.' : 'Copy failed.', !ok, 1600);
     };
-    turn.meta.append(left, copyAll);
+    actions.appendChild(copyAll);
+    turn.meta.append(left, actions);
   }
 
   scrollToBottom(false);
@@ -746,10 +746,11 @@ function updateSendState() {
 }
 
 function renderActionsMenu(filter = '') {
+  const actions = state.adapter.quickActions || [];
   const q = filter.trim().toLowerCase();
   state.filteredActions = q
-    ? QUICK_ACTIONS.filter(a => a.cmd.includes(q) || a.title.toLowerCase().includes(q))
-    : QUICK_ACTIONS;
+    ? actions.filter(a => a.cmd.includes(q) || a.title.toLowerCase().includes(q))
+    : actions;
 
   const menu = $('actions-menu');
   menu.innerHTML = '';
@@ -852,6 +853,15 @@ document.addEventListener('click', e => {
   }
 });
 
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !$('keys-panel').hidden) {
+    closeKeysPanel();
+  } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    inputEl.focus();
+  }
+});
+
 /* ---------- Providers & chat streaming ---------- */
 
 async function loadProviders() {
@@ -890,14 +900,16 @@ async function sendTurn(userText) {
   closeActionsMenu();
   inputEl.value = '';
   autoResizeInput();
+  state.lastPrompt = text;
 
-  // Pull fresh document/selection right before sending so the model sees recent typing
-  await readWordContext();
+  // Pull fresh host context right before sending so the model sees recent edits
+  await readHostContext();
 
   const usedSelection = state.selectionText;
   const usedDoc = state.documentText;
+  const usedHostContext = state.hostContext;
 
-  addUserTurn(text, usedSelection);
+  addUserTurn(text, usedSelection, usedHostContext);
   state.messages.push({ role: 'user', content: text });
 
   const turn = createAssistantTurn();
@@ -913,11 +925,13 @@ async function sendTurn(userText) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        host: state.hostId,
         messages: state.messages,
         selection: usedSelection,
         documentText: usedDoc,
         contextMode: state.contextMode,
         comments: state.comments,
+        hostContext: usedHostContext,
       }),
       signal: controller.signal,
     });
@@ -946,7 +960,7 @@ async function sendTurn(userText) {
         const payload = JSON.parse(frame.slice(5).trim());
         if (payload.delta) {
           reply += payload.delta;
-          renderAssistantTurn(turn, reply, usedSelection, false);
+          renderAssistantTurn(turn, reply, usedSelection, usedHostContext, false);
         }
         if (payload.error) throw new Error(payload.error);
         if (payload.done) {
@@ -957,13 +971,14 @@ async function sendTurn(userText) {
 
     if (!reply.trim()) throw new Error('The model returned nothing.');
     state.messages.push({ role: 'assistant', content: reply });
-    renderAssistantTurn(turn, reply, usedSelection, true, metaLabel);
+    renderAssistantTurn(turn, reply, usedSelection, usedHostContext, true, metaLabel);
 
-    // In Auto-apply mode, apply all proposed edits automatically once the reply finishes
-    if (state.autoApply && state.inWord) {
+    // In Auto-apply mode, apply all non-destructive proposed edits automatically once finished
+    if (state.autoApply && state.inOffice) {
       const finalParts = parseAssistantReply(reply).filter(p => p.kind === 'edit');
       let appliedCount = 0;
       for (let idx = 0; idx < finalParts.length; idx++) {
+        if (isDestructiveAction(finalParts[idx].action)) continue;
         const ok = await applyEdit(finalParts[idx], usedSelection);
         if (ok) {
           turn.appliedSet.add(idx);
@@ -971,7 +986,7 @@ async function sendTurn(userText) {
         }
       }
       if (appliedCount > 0) {
-        renderAssistantTurn(turn, reply, usedSelection, true, metaLabel);
+        renderAssistantTurn(turn, reply, usedSelection, usedHostContext, true, metaLabel);
       }
     }
   } catch (e) {
@@ -979,7 +994,7 @@ async function sendTurn(userText) {
       showToast('Stopped.', false, 1800);
       if (reply.trim()) {
         state.messages.push({ role: 'assistant', content: reply });
-        renderAssistantTurn(turn, reply, usedSelection, true, 'Stopped');
+        renderAssistantTurn(turn, reply, usedSelection, usedHostContext, true, 'Stopped');
       } else {
         turn.wrap.remove();
         state.messages.pop();
@@ -988,7 +1003,7 @@ async function sendTurn(userText) {
     } else {
       showToast(e.message || String(e), true);
       if (reply.trim()) {
-        renderAssistantTurn(turn, reply, usedSelection, true, 'Error');
+        renderAssistantTurn(turn, reply, usedSelection, usedHostContext, true, 'Error', true);
       } else {
         turn.wrap.remove();
         state.messages.pop();
@@ -1129,30 +1144,30 @@ $('keys-remove').onclick = async () => {
   }
 };
 
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape' && !$('keys-panel').hidden) closeKeysPanel();
-});
-
 /* ---------- Boot ---------- */
 
-function boot(inWord) {
-  state.inWord = inWord;
+function boot(detectedHost) {
+  state.inOffice = Boolean(detectedHost);
+  state.hostId = detectedHost || 'word';
+  state.adapter = createHostAdapter(state.hostId);
+
   loadProviders();
-  updateToolbarToggles();
-  updateContextUI();
+  updateHostChrome();
   renderEmptyState();
   updateSendState();
-  if (inWord) {
-    watchSelection();
+
+  if (state.inOffice) {
+    state.adapter.watchSelection(scheduleRead, msg => showToast(msg));
+    readHostContext();
   } else {
-    showToast('Preview mode (open inside Word for live document editing).', false, 4000);
+    showToast('Preview mode (open inside Word, Excel, or PowerPoint for live editing).', false, 4000);
   }
 }
 
 if (typeof Office !== 'undefined' && Office.onReady) {
   Office.onReady(info => {
-    boot(info && info.host === Office.HostType.Word);
+    boot(detectOfficeHost(info, Office));
   });
 } else {
-  boot(false);
+  boot(null);
 }

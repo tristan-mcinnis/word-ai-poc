@@ -1,1 +1,13 @@
-{"name":"word-ai-poc","private":true,"scripts":{"start":"node server.mjs","test":"node --test"},"devDependencies":{"office-addin-dev-certs":"^1.13.5"},"type":"module"}
+{
+  "name": "word-ai-poc",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test \"test/*.test.mjs\"",
+    "eval": "node evals/run-evals.mjs"
+  },
+  "devDependencies": {
+    "office-addin-dev-certs": "^1.13.5"
+  }
+}
