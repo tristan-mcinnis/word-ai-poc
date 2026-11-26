@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
+import { parseEnvContent, upsertEnvKey } from './lib/env.mjs';
 
 const certDir = path.join(os.homedir(), '.office-addin-dev-certs');
 let options;
@@ -53,22 +54,42 @@ function writeConfig(next) {
 /* ---------- the key: read at run time, never sent to the browser or logged ---------- */
 
 function readEnvFile(filePath) {
-  const out = {};
-  let raw = '';
-  try { raw = fs.readFileSync(filePath, 'utf8'); } catch { return out; }
-  for (const line of raw.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eq = trimmed.indexOf('=');
-    if (eq <= 0) continue;
-    const k = trimmed.slice(0, eq).trim();
-    let v = trimmed.slice(eq + 1).trim();
-    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
-      v = v.slice(1, -1);
-    }
-    if (k && v) out[k] = v;
-  }
-  return out;
+  try { return parseEnvContent(fs.readFileSync(filePath, 'utf8')); } catch { return {}; }
+}
+
+function writeEnvKey(envName, value) {
+  fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  let current = '';
+  try { current = fs.readFileSync(ENV_FILE, 'utf8'); } catch {}
+  const next = upsertEnvKey(current, envName, value);
+  fs.writeFileSync(ENV_FILE, next, { mode: 0o600 });
+}
+
+function keyStatusSummary() {
+  const userEnv = readEnvFile(ENV_FILE);
+  const localEnv = readEnvFile(path.join(process.cwd(), '.env'));
+  const hasHelper = fs.existsSync(path.join(os.homedir(), 'skills', '_lib', 'auth.py'));
+  return {
+    envPath: '~/.config/word-poc/.env',
+    hasExternalHelper: hasHelper,
+    providers: Object.entries(PROVIDERS).map(([id, p]) => {
+      const envName = p.envKey;
+      const source = process.env[envName]
+        ? 'env'
+        : userEnv[envName]
+          ? 'config'
+          : localEnv[envName]
+            ? 'local'
+            : null;
+      return {
+        id,
+        label: p.label,
+        envKey: envName,
+        configured: Boolean(source),
+        source,
+      };
+    }),
+  };
 }
 
 function secretFor(provider) {
@@ -286,6 +307,23 @@ const handler = async (req, res) => {
       base: String(input.base || PROVIDERS[input.provider].base).slice(0, 200),
     });
     return json(res, 200, { active: readConfig() });
+  }
+  if (pathname === '/api/keys' && req.method === 'GET') {
+    return json(res, 200, keyStatusSummary());
+  }
+  if (pathname === '/api/keys' && req.method === 'POST') {
+    let body = '';
+    for await (const chunk of req) {
+      body += chunk;
+      if (body.length > 16384) return json(res, 413, { error: 'Payload too large' });
+    }
+    let input = {};
+    try { input = JSON.parse(body); } catch { return json(res, 400, { error: 'Bad request' }); }
+    const p = PROVIDERS[input.provider];
+    if (!p) return json(res, 400, { error: 'Unknown provider' });
+    const apiKey = typeof input.apiKey === 'string' ? input.apiKey.trim() : '';
+    writeEnvKey(p.envKey, apiKey);
+    return json(res, 200, { ok: true, ...keyStatusSummary() });
   }
   if (pathname === '/api/chat' && req.method === 'POST') return handleChat(req, res);
 

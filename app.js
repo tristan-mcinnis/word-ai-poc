@@ -39,6 +39,7 @@ const state = {
   menuIndex: 0,
   filteredActions: QUICK_ACTIONS,
   userScrolledUp: false,
+  keyInfo: null,
 };
 
 /* ---------- Toast notifications ---------- */
@@ -777,6 +778,9 @@ async function sendTurn(userText) {
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: `Server returned ${res.status}` }));
+      if (res.status === 502 && /No API key/i.test(err.error || '')) {
+        openKeysPanel($('provider').value);
+      }
       throw new Error(err.error || `Server returned ${res.status}`);
     }
 
@@ -845,6 +849,127 @@ $('new').onclick = () => {
   showToast('Started a new conversation.', false, 1600);
   inputEl.focus();
 };
+
+/* ---------- Local API Keys panel (write-only to ~/.config/word-poc/.env) ---------- */
+
+function syncKeysFormSelection() {
+  if (!state.keyInfo) return;
+  const sel = $('keys-provider');
+  const current = state.keyInfo.providers.find(p => p.id === sel.value);
+  if (!current) return;
+  $('keys-input-label').textContent = `${current.label} (${current.envKey})`;
+  $('keys-input').placeholder = current.configured ? 'Paste a new key to replace…' : `Paste ${current.envKey}…`;
+  $('keys-remove').hidden = current.source !== 'config';
+  document.querySelectorAll('#keys-list .key-chip').forEach(chip => {
+    chip.classList.toggle('selected', chip.dataset.id === current.id);
+  });
+}
+
+function renderKeysPanel(data, focusProvider = null) {
+  state.keyInfo = data;
+  const list = $('keys-list');
+  const sel = $('keys-provider');
+  const prevChoice = focusProvider || sel.value || $('provider').value;
+  list.innerHTML = '';
+  sel.innerHTML = '';
+
+  for (const p of data.providers) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'key-chip';
+    chip.dataset.id = p.id;
+    chip.innerHTML = `<span class="key-dot${p.configured ? ' ok' : ''}"></span><span></span>`;
+    chip.querySelector('span:last-child').textContent = p.label;
+    chip.title = p.configured ? `${p.label}: configured (${p.source})` : `${p.label}: not saved in .env`;
+    chip.onclick = () => {
+      sel.value = p.id;
+      syncKeysFormSelection();
+      $('keys-input').focus();
+    };
+    list.appendChild(chip);
+
+    const opt = document.createElement('option');
+    opt.value = p.id;
+    opt.textContent = `${p.label} · ${p.envKey}`;
+    sel.appendChild(opt);
+  }
+
+  if (prevChoice && data.providers.some(p => p.id === prevChoice)) {
+    sel.value = prevChoice;
+  }
+  syncKeysFormSelection();
+}
+
+async function openKeysPanel(focusProvider = null) {
+  closeActionsMenu();
+  try {
+    const res = await fetch('/api/keys');
+    const data = await res.json();
+    renderKeysPanel(data, focusProvider || $('provider').value);
+    $('keys-panel').hidden = false;
+    $('keys-input').value = '';
+    $('keys-input').focus();
+  } catch {
+    showToast('Could not load key settings from local server.', true);
+  }
+}
+
+function closeKeysPanel() {
+  $('keys-panel').hidden = true;
+  $('keys-input').value = '';
+}
+
+$('keys-btn').onclick = () => {
+  if ($('keys-panel').hidden) openKeysPanel();
+  else closeKeysPanel();
+};
+$('keys-close').onclick = closeKeysPanel;
+$('keys-provider').onchange = syncKeysFormSelection;
+
+$('keys-form').onsubmit = async e => {
+  e.preventDefault();
+  const provider = $('keys-provider').value;
+  const apiKey = $('keys-input').value.trim();
+  if (!apiKey) {
+    showToast('Paste an API key first.', true);
+    return;
+  }
+  try {
+    const res = await fetch('/api/keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, apiKey }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not save key');
+    $('keys-input').value = '';
+    renderKeysPanel(data, provider);
+    showToast('API key saved locally to ~/.config/word-poc/.env');
+  } catch (err) {
+    showToast(err.message || String(err), true);
+  }
+};
+
+$('keys-remove').onclick = async () => {
+  const provider = $('keys-provider').value;
+  try {
+    const res = await fetch('/api/keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, apiKey: '' }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not remove key');
+    renderKeysPanel(data, provider);
+    showToast('Removed key from ~/.config/word-poc/.env');
+  } catch (err) {
+    showToast(err.message || String(err), true);
+  }
+};
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !$('keys-panel').hidden) closeKeysPanel();
+});
 
 /* ---------- Boot ---------- */
 

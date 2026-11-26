@@ -73,6 +73,12 @@ button, select, textarea {
   letter-spacing: -0.01em;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .icon-pill {
   display: inline-flex;
   align-items: center;
@@ -669,3 +675,104 @@ button, select, textarea {
   background: var(--ink);
 }
 .stop-btn:hover { background: #000; }
+
+/* ---------- Local API Keys Panel ---------- */
+#keys-panel {
+  position: fixed;
+  top: 48px;
+  left: 12px;
+  right: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  box-shadow: 0 10px 28px rgba(30, 28, 26, 0.14);
+  padding: 12px;
+  z-index: 40;
+  max-height: calc(100vh - 70px);
+  overflow-y: auto;
+}
+#keys-panel[hidden] { display: none; }
+
+.keys-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.keys-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 10px;
+}
+
+.key-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--ink-secondary);
+  cursor: pointer;
+}
+.key-chip:hover { border-color: var(--line-strong); color: var(--ink); }
+.key-chip.selected { border-color: var(--accent); color: var(--ink); background: var(--accent-soft); }
+
+.key-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+.key-dot.ok { background: #2f855a; }
+
+.keys-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.keys-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-secondary);
+}
+
+#keys-provider, #keys-input {
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: var(--surface);
+  font-size: 12.5px;
+  outline: none;
+}
+#keys-provider:focus, #keys-input:focus {
+  border-color: var(--accent);
+}
+
+.keys-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.keys-note {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.keys-note code {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  background: var(--surface-subtle);
+  padding: 1px 3px;
+  border-radius: 4px;
+}

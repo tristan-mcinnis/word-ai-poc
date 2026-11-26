@@ -39,9 +39,11 @@ Then open (or restart) Microsoft Word and go to:
 
 ## API Keys
 
+Add or update keys at any time by clicking **Keys** in the Word pane header (writes locally to `~/.config/word-poc/.env` with `chmod 600`; saved keys are never sent back to the browser), during `./install.sh`, or by editing `.env` directly.
+
 Keys are loaded at runtime on your machine in this order:
 1. Process environment variables
-2. `~/.config/word-poc/.env` (created by `./install.sh`)
+2. `~/.config/word-poc/.env` (created by `./install.sh` or the in-pane **Keys** button)
 3. `.env` in the repository directory (gitignored)
 
 | Provider | Environment variable | Default model |

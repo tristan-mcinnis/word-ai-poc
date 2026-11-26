@@ -14,12 +14,35 @@
     <h1>Editor</h1>
   </div>
   <div class="header-actions">
+    <button id="keys-btn" class="icon-pill" title="Manage local API keys">
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="5.5" cy="10.5" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M7.8 8.2 14 2m-2.5 2.5L13.5 6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>Keys</span>
+    </button>
     <button id="new" class="icon-pill" title="Start a new conversation">
       <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
       <span>New</span>
     </button>
   </div>
 </header>
+
+<div id="keys-panel" hidden role="dialog" aria-label="Local API keys">
+  <div class="keys-head">
+    <strong>API keys</strong>
+    <button id="keys-close" type="button" class="micro-btn" aria-label="Close">&times;</button>
+  </div>
+  <div id="keys-list" class="keys-list"></div>
+  <form id="keys-form" class="keys-form">
+    <label for="keys-provider" class="keys-label">Provider</label>
+    <select id="keys-provider"></select>
+    <label for="keys-input" class="keys-label" id="keys-input-label">API key</label>
+    <input id="keys-input" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your API key…">
+    <div class="keys-actions">
+      <button type="submit" class="btn-primary">Save key</button>
+      <button type="button" id="keys-remove" class="btn-secondary" hidden>Remove</button>
+    </div>
+    <p class="keys-note">Stored locally in <code>~/.config/word-poc/.env</code> (chmod 600). Never sent back to the browser.</p>
+  </form>
+</div>
 
 <main id="transcript" aria-live="polite"></main>
 
