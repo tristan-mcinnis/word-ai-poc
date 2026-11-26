@@ -24,7 +24,7 @@ const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 const ENV_FILE = path.join(CONFIG_DIR, '.env');
 
 const PROVIDERS = {
-  deepseek:    { label: 'DeepSeek',    api: 'openai',    base: 'https://api.deepseek.com/v1',                             model: 'deepseek-chat',           envKey: 'DEEPSEEK_API_KEY' },
+  deepseek:    { label: 'DeepSeek',    api: 'openai',    base: 'https://api.deepseek.com/v1',                             model: 'deepseek-flash',          envKey: 'DEEPSEEK_API_KEY' },
   anthropic:   { label: 'Claude',      api: 'anthropic', base: 'https://api.anthropic.com/v1',                            model: 'claude-sonnet-4-5',       envKey: 'ANTHROPIC_API_KEY' },
   openai:      { label: 'OpenAI',      api: 'openai',    base: 'https://api.openai.com/v1',                               model: 'gpt-4.1-mini',            envKey: 'OPENAI_API_KEY' },
   gemini:      { label: 'Gemini',      api: 'openai',    base: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.5-flash',        envKey: 'GEMINI_API_KEY' },
@@ -39,9 +39,12 @@ function readConfig() {
   try { saved = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch {}
   const provider = PROVIDERS[saved.provider] ? saved.provider : 'deepseek';
   const p = PROVIDERS[provider];
+  const rawModel = typeof saved.model === 'string' && saved.model.trim() ? saved.model.trim() : p.model;
+  // Migrate deprecated DeepSeek model alias to current default
+  const model = provider === 'deepseek' && rawModel === 'deepseek-chat' ? p.model : rawModel;
   return {
     provider,
-    model: typeof saved.model === 'string' && saved.model.trim() ? saved.model.trim() : p.model,
+    model,
     base: typeof saved.base === 'string' && saved.base.trim() ? saved.base.trim() : p.base,
   };
 }

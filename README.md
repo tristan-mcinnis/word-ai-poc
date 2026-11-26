@@ -51,7 +51,7 @@ Keys are loaded at runtime on your machine in this order:
 | Claude | `ANTHROPIC_API_KEY` | `claude-sonnet-4-5` |
 | OpenAI | `OPENAI_API_KEY` | `gpt-4.1-mini` |
 | Gemini | `GEMINI_API_KEY` | `gemini-2.5-flash` |
-| DeepSeek | `DEEPSEEK_API_KEY` | `deepseek-chat` |
+| DeepSeek | `DEEPSEEK_API_KEY` | `deepseek-flash` |
 | Qwen | `DASHSCOPE_API_KEY` | `qwen-plus` |
 | Kimi | `KIMI_CN_API_KEY` | `kimi-k2-0905-preview` |
 | GLM | `ZHIPU_API_KEY` | `glm-4.6` |
