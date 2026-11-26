@@ -10,43 +10,35 @@
 <body>
 <header>
   <h1>Word pane</h1>
-  <select id="provider" title="Model provider"></select>
+  <select id="provider" title="Model"></select>
+  <button id="new" class="ghost" title="Clear this conversation">New</button>
 </header>
-<main>
-  <section class="card">
-    <div class="label">Selection</div>
-    <div id="original" class="empty">Nothing captured. Select a paragraph in the document, then press Read selection.</div>
-  </section>
 
-  <section class="card">
-    <div class="label">Action</div>
-    <div class="row">
-      <button data-mode="rewrite">Rewrite</button>
-      <button data-mode="shorten">Shorten</button>
-      <button data-mode="tighten">Tighten</button>
-      <button data-mode="plain">Plain</button>
-      <button data-mode="formal">Formal</button>
-      <button data-mode="bullets">Bullets</button>
-      <button data-mode="summary">Summarise</button>
-    </div>
-    <textarea id="instruction" placeholder="Or write your own instruction, for example: cut the second paragraph, keep the figures, voice of a partner."></textarea>
-    <div class="row" style="margin-top:8px">
-      <input id="language" class="lang" placeholder="Language (optional)">
-    </div>
-  </section>
+<div id="transcript">
+  <div class="turn assistant"><div class="bubble">Ask for a change to the document. Selecting text in Word attaches it automatically as context.</div></div>
+</div>
 
-  <section class="card">
-    <div class="label">Result</div>
-    <div id="preview" class="thinking">No result yet.</div>
-  </section>
-</main>
-<footer>
-  <button id="read" class="primary">Read selection</button>
-  <button id="run" disabled>Run</button>
-  <button id="apply" disabled>Replace selection</button>
-  <button id="insert" disabled>Insert below</button>
-  <button id="stop" disabled>Stop</button>
-</footer>
+<div id="contextbar">
+  <span>Context</span>
+  <span id="context" class="none">no selection</span>
+  <button id="refresh" class="ghost" title="Read the selection again">Refresh</button>
+</div>
+
+<div id="chips">
+  <button data-send="Tighten this. Remove filler and hedging, keep the meaning.">Tighten</button>
+  <button data-send="Shorten this by about a third. Keep every fact that matters.">Shorten</button>
+  <button data-send="Rewrite this so it reads clearly and directly, same meaning, same length.">Rewrite</button>
+  <button data-send="Make this plainer: short sentences, common words, one idea each.">Plain</button>
+  <button data-send="Turn this into a short bullet list, one idea per bullet.">Bullets</button>
+  <button data-send="Summarise this in two sentences.">Summarise</button>
+</div>
+
+<div id="composer">
+  <textarea id="input" placeholder="Or say what to do, for example: keep the figures but drop the second paragraph. Then say shorter."></textarea>
+  <button id="send">Send</button>
+  <button id="stop" hidden>Stop</button>
+</div>
+
 <p id="status">Starting…</p>
 <script src="app.js"></script>
 </body>
