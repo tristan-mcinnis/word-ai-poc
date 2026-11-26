@@ -148,11 +148,13 @@ const SYSTEM = [
   '4) Edit a specific passage elsewhere in the document (works even when nothing is selected): <edit action="replace_match"><find>exact existing text from the document</find><content>replacement text</content></edit>',
   '5) Add new text to the end of the document: <edit action="append_doc">new text</edit>',
   '6) Attach a Word margin comment to the selection: <edit action="comment">comment text</edit>',
+  '7) Reply to an open Word comment thread (using its id from <comments>): <edit action="reply_comment" comment_id="ID">reply text</edit>',
   'You may optionally include a short label attribute, e.g. <edit action="insert_after" label="Chinese translation">.',
+  'When asked to work through open comments, emit a <edit action="replace_match"> for each text change plus a <edit action="reply_comment" comment_id="..."> explaining what you changed.',
   'Preserve the author voice, language, and paragraph breaks inside <edit> blocks. Outside <edit> blocks, feel free to chat naturally about what you changed or suggest next moves.',
 ].join('\n');
 
-function buildContextPrompt({ selection, documentText, contextMode }) {
+function buildContextPrompt({ selection, documentText, contextMode, comments }) {
   const parts = [];
   const doc = typeof documentText === 'string' ? documentText.slice(0, 40000).trim() : '';
   const sel = typeof selection === 'string' ? selection.slice(0, 20000).trim() : '';
@@ -162,6 +164,16 @@ function buildContextPrompt({ selection, documentText, contextMode }) {
   }
   if (contextMode !== 'document' && sel) {
     parts.push(`Currently selected passage in Word:\n<selection>\n${sel}\n</selection>`);
+  }
+  if (Array.isArray(comments) && comments.length > 0) {
+    const formatted = comments.slice(0, 30).map(c => {
+      const id = String(c.id || '').slice(0, 64);
+      const author = String(c.author || 'Reviewer').slice(0, 60);
+      const anchor = String(c.anchor || '').slice(0, 400);
+      const text = String(c.content || '').slice(0, 800);
+      return `- [id=${id}] ${author}${anchor ? ` on "${anchor}"` : ''}: ${text}`;
+    }).join('\n');
+    parts.push(`Open Word comments in this document:\n<comments>\n${formatted}\n</comments>`);
   }
   return parts.join('\n\n');
 }
@@ -261,6 +273,7 @@ async function handleChat(req, res) {
     selection: input.selection,
     documentText: input.documentText,
     contextMode: input.contextMode || 'auto',
+    comments: input.comments,
   });
   if (contextBlock) {
     messages.push({ role: 'system', content: contextBlock });

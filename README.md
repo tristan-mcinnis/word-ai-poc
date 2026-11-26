@@ -6,15 +6,16 @@ Chat naturally about your open document, select text to edit in place, inspect w
 
 ## Features
 
-- **Ongoing chat with full-document awareness**: Reads both the open Word document and your current selection automatically. Switch scope between **Auto (doc + selection)**, **Selection only**, and **Whole doc** with one click.
-- **Structured edit cards with Diff / Preview**: Proposed edits appear as clean cards with word/CJK diffing and one-click apply:
-  - Replace selection (with smart recovery if your cursor moved)
+- **Ongoing chat with full-document awareness**: Reads the open Word document, your current selection, and open Word comments automatically. Switch scope between **Auto (doc + selection)**, **Selection only**, and **Whole doc** with one click.
+- **Native Word Track Changes & Ask / Auto-apply**: Toggle **Track** in the composer to write edits as native Word redline revisions (reviewable in Word's Review tab). Use **Ask** mode (default) to review and click **Allow** or **Always allow**, or switch to **Auto** to apply edits directly.
+- **Structured edit cards with Diff / Preview**: Proposed edits support word/CJK diffing and one-click apply:
+  - Replace selection (including multi-paragraph spans)
   - Insert clean paragraphs directly below or above
   - Targeted search-and-replace anywhere in the document
   - Append to the end of the document
-  - Add native Word margin comments
+  - Add native Word margin comments and reply inside open Word comment threads
   - **Apply all** when a reply proposes multiple edits
-- **Quick actions without clutter**: Press `/` in the composer or click **Actions** for one-click transforms (`/tighten`, `/shorten`, `/rewrite`, `/plain`, `/bullets`, `/zh`, `/en`, `/summarise`, `/critique`, `/comment`).
+- **Slash workflows (`/`)**: Press `/` in the composer for document-wide and selection workflows (`/copy-edit`, `/check-doc`, `/work-comments`, `/tighten`, `/shorten`, `/rewrite`, `/plain`, `/bullets`, `/zh`, `/en`, `/summarise`, `/comment`).
 - **Private & local**: Runs on `https://localhost:3443` on your Mac. API keys stay in `~/.config/word-poc/.env` (or your environment) and are never sent to the browser or stored in git.
 
 ## Quick Install (macOS)

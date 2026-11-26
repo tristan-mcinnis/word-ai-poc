@@ -11,6 +11,9 @@ import {
 const $ = id => document.getElementById(id);
 
 const QUICK_ACTIONS = [
+  { cmd: '/copy-edit', title: 'Copy-edit document', prompt: 'Copy-edit this document for typos, grammar, wordiness, and awkward phrasing. Propose targeted edits using replace_match.' },
+  { cmd: '/check-doc', title: 'Check document', prompt: 'Audit the whole document for structure, clarity, inconsistencies, undefined terms, and gaps. Give me a prioritised read before making edits.' },
+  { cmd: '/work-comments', title: 'Work through comments', prompt: 'Work through all open Word comments in this document. For each comment, propose the exact text edit using replace_match and a reply_comment explaining what you changed.' },
   { cmd: '/tighten', title: 'Tighten', prompt: 'Tighten this. Remove filler and hedging while keeping the meaning and voice.' },
   { cmd: '/shorten', title: 'Shorten', prompt: 'Shorten this by about a third, keeping every key fact.' },
   { cmd: '/rewrite', title: 'Rewrite clearly', prompt: 'Rewrite this so it reads clearly and directly, same meaning and approximate length.' },
@@ -19,7 +22,6 @@ const QUICK_ACTIONS = [
   { cmd: '/zh', title: 'Translate to Chinese (below)', prompt: 'Translate this into natural Chinese and insert it directly underneath.' },
   { cmd: '/en', title: 'Translate to English (below)', prompt: 'Translate this into natural English and insert it directly underneath.' },
   { cmd: '/summarise', title: 'Summarise', prompt: 'Summarise the main points concisely.' },
-  { cmd: '/critique', title: 'Critique & improve', prompt: 'Critique this for clarity, structure, and weak spots. Point out what to fix first.' },
   { cmd: '/comment', title: 'Add Word comment', prompt: 'Write a short, concrete editorial review comment on this passage as a Word comment.' },
 ];
 
@@ -30,7 +32,10 @@ const state = {
   messages: [],          // { role, content } sent to the model
   selectionText: '',     // current Word selection
   documentText: '',      // full Word document body text
+  comments: [],          // open Word comments: { id, author, content, anchor }
   contextMode: 'auto',   // 'auto' | 'selection' | 'document'
+  trackChanges: false,   // synced with Word native changeTrackingMode (WordApi 1.5+)
+  autoApply: false,      // false = Ask before edits, true = Always allow
   controller: null,
   readTimer: null,
   reading: false,
@@ -62,11 +67,28 @@ $('toast-close').onclick = () => {
 
 /* ---------- Document & selection reading ---------- */
 
+function updateToolbarToggles() {
+  const trackBtn = $('track-btn');
+  trackBtn.classList.toggle('active', state.trackChanges);
+  trackBtn.title = state.trackChanges
+    ? 'Track Changes is ON (edits appear as native Word redlines)'
+    : 'Track Changes is OFF (click to enable native Word redlines)';
+
+  const modeBtn = $('mode-btn');
+  modeBtn.classList.toggle('active', state.autoApply);
+  modeBtn.querySelector('span').textContent = state.autoApply ? 'Auto' : 'Ask';
+  modeBtn.title = state.autoApply
+    ? 'Auto-apply ON: edits apply directly to Word'
+    : 'Ask before edits: review and click Allow on each edit';
+}
+
 function updateContextUI() {
   const badge = $('context-badge');
   const preview = $('context-preview');
   const selClean = state.selectionText.replace(/\s+/g, ' ').trim();
   const docWords = countWords(state.documentText);
+  const openComments = state.comments.length;
+  const commentSuffix = openComments ? ` · ${openComments} comment${openComments === 1 ? '' : 's'}` : '';
 
   if (state.contextMode === 'selection') {
     badge.textContent = selClean ? `Selection · ${selClean.length}c` : 'Selection only';
@@ -75,7 +97,7 @@ function updateContextUI() {
   } else if (state.contextMode === 'document') {
     badge.textContent = `Whole doc · ${docWords}w`;
     badge.classList.remove('has-selection');
-    preview.textContent = docWords ? 'Full document attached' : 'Document is empty';
+    preview.textContent = docWords ? `Full document attached${commentSuffix}` : 'Document is empty';
   } else {
     // Auto: full doc in background + active selection highlighted
     if (selClean) {
@@ -85,7 +107,7 @@ function updateContextUI() {
     } else {
       badge.textContent = docWords ? `Document · ${docWords}w` : 'Document';
       badge.classList.remove('has-selection');
-      preview.textContent = docWords ? 'Full doc attached · select to focus' : 'Start typing in Word';
+      preview.textContent = docWords ? `Full doc attached${commentSuffix}` : 'Start typing in Word';
     }
   }
 
@@ -101,10 +123,48 @@ async function readWordContext() {
       const body = ctx.document.body;
       sel.load('text');
       body.load('text');
+      const canTrack = Office.context.requirements && Office.context.requirements.isSetSupported('WordApi', '1.5');
+      if (canTrack) ctx.document.load('changeTrackingMode');
       await ctx.sync();
-      const changed = sel.text !== state.selectionText || body.text !== state.documentText;
+
+      let changed = sel.text !== state.selectionText || body.text !== state.documentText;
       state.selectionText = sel.text || '';
       state.documentText = body.text || '';
+
+      if (canTrack && ctx.document.changeTrackingMode) {
+        const isOn = ctx.document.changeTrackingMode !== Word.ChangeTrackingMode.off;
+        if (isOn !== state.trackChanges) {
+          state.trackChanges = isOn;
+          updateToolbarToggles();
+        }
+      }
+
+      // Read open Word comments (WordApi 1.4+)
+      try {
+        if (typeof body.getComments === 'function') {
+          const commentsCol = body.getComments();
+          commentsCol.load('items/id,items/content,items/authorName,items/resolved');
+          await ctx.sync();
+          const openItems = commentsCol.items.filter(c => !c.resolved).slice(0, 30);
+          const ranges = openItems.map(c => {
+            const r = c.getRange();
+            r.load('text');
+            return r;
+          });
+          if (ranges.length) await ctx.sync();
+          const nextComments = openItems.map((c, idx) => ({
+            id: c.id,
+            author: c.authorName || 'Reviewer',
+            content: c.content || '',
+            anchor: (ranges[idx]?.text || '').trim(),
+          }));
+          if (nextComments.length !== state.comments.length) changed = true;
+          state.comments = nextComments;
+        }
+      } catch {
+        // Comments API unavailable on older Word builds; ignore silently.
+      }
+
       if (changed) updateContextUI();
     });
   } catch {
@@ -221,30 +281,78 @@ function splitParagraphs(text) {
 }
 
 async function findMatchingRange(ctx, snippet) {
-  const clean = snippet.trim();
+  const clean = String(snippet || '').trim();
   if (!clean) return null;
 
-  // Word's body.search() has a 255-character limit.
-  if (clean.length <= 240) {
+  // Word's body.search() has a 255-character limit and works best on single-line matches.
+  if (clean.length <= 240 && !/[\r\n]/.test(clean)) {
     const results = ctx.document.body.search(clean, { matchCase: true });
     results.load('items');
     await ctx.sync();
     if (results.items.length > 0) return results.items[0];
   }
 
-  // Fallback: match against paragraph text directly (works for long passages)
+  // Fallback: match against paragraph text directly (supports single AND multi-paragraph ranges)
   const paras = ctx.document.body.paragraphs;
   paras.load('items/text');
   await ctx.sync();
+
   const normalizedTarget = clean.replace(/\s+/g, ' ');
   for (const p of paras.items) {
     const pNorm = (p.text || '').replace(/\s+/g, ' ').trim();
-    if (pNorm === normalizedTarget || pNorm.includes(normalizedTarget)) {
+    if (pNorm && (pNorm === normalizedTarget || pNorm.includes(normalizedTarget))) {
       return p.getRange();
     }
   }
+
+  // Multi-paragraph span match: check consecutive non-empty paragraphs
+  const snippetLines = clean.split(/[\r\n]+/).map(s => s.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  if (snippetLines.length >= 2) {
+    const firstLine = snippetLines[0];
+    const lastLine = snippetLines[snippetLines.length - 1];
+    for (let i = 0; i < paras.items.length; i++) {
+      const startNorm = (paras.items[i].text || '').replace(/\s+/g, ' ').trim();
+      if (!startNorm || (!startNorm.includes(firstLine) && !firstLine.includes(startNorm))) continue;
+      for (let j = i; j < Math.min(paras.items.length, i + snippetLines.length + 4); j++) {
+        const endNorm = (paras.items[j].text || '').replace(/\s+/g, ' ').trim();
+        if (endNorm && (endNorm.includes(lastLine) || lastLine.includes(endNorm))) {
+          return paras.items[i].getRange().expandTo(paras.items[j].getRange());
+        }
+      }
+    }
+  }
+
   return null;
 }
+
+async function setWordTrackChanges(enabled) {
+  if (!state.inWord) {
+    state.trackChanges = enabled;
+    updateToolbarToggles();
+    return;
+  }
+  try {
+    await Word.run(async ctx => {
+      if (!Office.context.requirements || !Office.context.requirements.isSetSupported('WordApi', '1.5')) {
+        throw new Error('This Word version does not support toggling Track Changes from add-ins. Toggle it in the Review tab.');
+      }
+      ctx.document.changeTrackingMode = enabled ? Word.ChangeTrackingMode.trackAll : Word.ChangeTrackingMode.off;
+      await ctx.sync();
+    });
+    state.trackChanges = enabled;
+    updateToolbarToggles();
+    showToast(enabled ? 'Track Changes ON · edits will show as redlines' : 'Track Changes OFF', false, 2200);
+  } catch (e) {
+    showToast(e.message || String(e), true);
+  }
+}
+
+$('track-btn').onclick = () => setWordTrackChanges(!state.trackChanges);
+$('mode-btn').onclick = () => {
+  state.autoApply = !state.autoApply;
+  updateToolbarToggles();
+  showToast(state.autoApply ? 'Auto-apply ON · edits apply directly' : 'Ask before edits ON', false, 2000);
+};
 
 async function applyEdit(edit, expectedSelection = '', overrideAction = null) {
   const action = overrideAction || edit.action;
@@ -280,8 +388,24 @@ async function applyEdit(edit, expectedSelection = '', overrideAction = null) {
         return;
       }
 
+      if (action === 'reply_comment') {
+        if (typeof ctx.document.body.getComments !== 'function') {
+          throw new Error('This version of Word does not support replying to comments from add-ins.');
+        }
+        const commentsCol = ctx.document.body.getComments();
+        commentsCol.load('items/id');
+        await ctx.sync();
+        const targetComment = commentsCol.items.find(c => String(c.id) === String(edit.commentId));
+        if (!targetComment) {
+          throw new Error('Could not find that comment thread in the document.');
+        }
+        targetComment.reply(content);
+        await ctx.sync();
+        return;
+      }
+
       if (action === 'replace_match') {
-        const target = await findMatchingRange(ctx, edit.find || expectedSelection);
+        const target = await findMatchingRange(ctx, edit.find || expectedSelection || state.selectionText);
         if (!target) {
           throw new Error('Could not find the original passage in the document. Select it manually and use Replace.');
         }
@@ -297,7 +421,6 @@ async function applyEdit(edit, expectedSelection = '', overrideAction = null) {
       if (action === 'insert_after' || action === 'insert_before') {
         const lines = splitParagraphs(content);
         if (action === 'insert_after') {
-          // Insert in reverse order after the selection so paragraphs stay in exact order
           for (let i = lines.length - 1; i >= 0; i--) {
             sel.insertParagraph(lines[i], Word.InsertLocation.after);
           }
@@ -314,17 +437,17 @@ async function applyEdit(edit, expectedSelection = '', overrideAction = null) {
       let targetRange = sel;
       const selText = (sel.text || '').trim();
       const expectedClean = (expectedSelection || '').trim();
+      const fallbackClean = expectedClean || (state.selectionText || '').trim();
 
       if (!selText || (expectedClean && sel.text !== expectedSelection)) {
-        // Smart recovery: if the user clicked elsewhere, try locating the original passage!
-        if (expectedClean) {
-          const located = await findMatchingRange(ctx, expectedClean);
+        if (fallbackClean) {
+          const located = await findMatchingRange(ctx, fallbackClean);
           if (located) {
             targetRange = located;
-          } else {
-            throw new Error('Selection changed since this suggestion. Re-select the passage or use Insert below.');
+          } else if (!selText) {
+            throw new Error('Could not locate the selected passage. Re-select it in Word or use Insert below.');
           }
-        } else if (!selText) {
+        } else {
           throw new Error('Nothing is selected in Word. Select text first, or use Insert below.');
         }
       }
@@ -337,15 +460,17 @@ async function applyEdit(edit, expectedSelection = '', overrideAction = null) {
       await ctx.sync();
     });
 
+    const suffix = state.trackChanges ? ' (tracked change)' : ' · Cmd+Z to undo';
     const msgMap = {
-      replace_selection: 'Replaced in document · Cmd+Z to undo',
-      replace_match: 'Edit applied · Cmd+Z to undo',
-      insert_after: 'Inserted below · Cmd+Z to undo',
-      insert_before: 'Inserted above · Cmd+Z to undo',
-      append_doc: 'Appended to document · Cmd+Z to undo',
+      replace_selection: `Replaced in document${suffix}`,
+      replace_match: `Edit applied${suffix}`,
+      insert_after: `Inserted below${suffix}`,
+      insert_before: `Inserted above${suffix}`,
+      append_doc: `Appended to document${suffix}`,
       comment: 'Comment added in Word',
+      reply_comment: 'Posted reply to Word comment',
     };
-    showToast(msgMap[action] || 'Applied · Cmd+Z to undo');
+    showToast(msgMap[action] || `Applied${suffix}`);
     scheduleRead();
     return true;
   } catch (e) {
@@ -474,6 +599,26 @@ function buildEditCard(edit, index, turn, expectedSelection) {
       }
     };
     foot.appendChild(primary);
+
+    if (!state.autoApply && !turn.appliedSet.has(index)) {
+      const alwaysBtn = document.createElement('button');
+      alwaysBtn.type = 'button';
+      alwaysBtn.className = 'btn-secondary';
+      alwaysBtn.textContent = 'Always allow';
+      alwaysBtn.onclick = async () => {
+        state.autoApply = true;
+        updateToolbarToggles();
+        const ok = await applyEdit(edit, expectedSelection);
+        if (ok) {
+          turn.appliedSet.add(index);
+          card.classList.add('applied');
+          primary.classList.add('done');
+          primary.textContent = 'Applied ✓';
+          alwaysBtn.remove();
+        }
+      };
+      foot.appendChild(alwaysBtn);
+    }
 
     if (edit.action === 'replace_selection') {
       const insertBtn = document.createElement('button');
@@ -772,6 +917,7 @@ async function sendTurn(userText) {
         selection: usedSelection,
         documentText: usedDoc,
         contextMode: state.contextMode,
+        comments: state.comments,
       }),
       signal: controller.signal,
     });
@@ -812,6 +958,22 @@ async function sendTurn(userText) {
     if (!reply.trim()) throw new Error('The model returned nothing.');
     state.messages.push({ role: 'assistant', content: reply });
     renderAssistantTurn(turn, reply, usedSelection, true, metaLabel);
+
+    // In Auto-apply mode, apply all proposed edits automatically once the reply finishes
+    if (state.autoApply && state.inWord) {
+      const finalParts = parseAssistantReply(reply).filter(p => p.kind === 'edit');
+      let appliedCount = 0;
+      for (let idx = 0; idx < finalParts.length; idx++) {
+        const ok = await applyEdit(finalParts[idx], usedSelection);
+        if (ok) {
+          turn.appliedSet.add(idx);
+          appliedCount++;
+        }
+      }
+      if (appliedCount > 0) {
+        renderAssistantTurn(turn, reply, usedSelection, true, metaLabel);
+      }
+    }
   } catch (e) {
     if (e.name === 'AbortError') {
       showToast('Stopped.', false, 1800);
@@ -976,6 +1138,7 @@ document.addEventListener('keydown', e => {
 function boot(inWord) {
   state.inWord = inWord;
   loadProviders();
+  updateToolbarToggles();
   updateContextUI();
   renderEmptyState();
   updateSendState();

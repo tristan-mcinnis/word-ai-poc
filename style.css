@@ -642,18 +642,22 @@ button, select, textarea {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  border: none;
+  border: 1px solid transparent;
   background: transparent;
   color: var(--ink-secondary);
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 500;
-  padding: 4px 7px;
-  border-radius: 7px;
+  padding: 3px 7px;
+  border-radius: 6px;
   cursor: pointer;
 }
 .tool-btn:hover, .tool-btn.open {
   background: var(--surface-subtle);
   color: var(--ink);
+}
+.tool-btn.active {
+  background: var(--ink);
+  color: #fff;
 }
 
 .send-btn {

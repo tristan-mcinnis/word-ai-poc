@@ -40,6 +40,15 @@ test('parseAssistantReply parses replace_match with find and content', () => {
   assert.equal(parts[0].content, 'sharper sentence here');
 });
 
+test('parseAssistantReply parses reply_comment with comment_id', () => {
+  const reply = `<edit action="reply_comment" comment_id="c-42" label="Reply to Tristan">Tightened the wording as requested.</edit>`;
+  const parts = parseAssistantReply(reply);
+  assert.equal(parts.length, 1);
+  assert.equal(parts[0].action, 'reply_comment');
+  assert.equal(parts[0].commentId, 'c-42');
+  assert.equal(parts[0].content, 'Tightened the wording as requested.');
+});
+
 test('parseAssistantReply supports legacy replacement tag and streaming incomplete tags', () => {
   const legacy = parseAssistantReply('<replacement>\nHello world\n</replacement>');
   assert.equal(legacy.length, 1);
