@@ -5,11 +5,11 @@ function status(text) { $('status').textContent = text; }
 async function run(fn) {
   if (busy) return;
   busy = true;
-  for (const id of ['read','demo','ai','apply']) $(id).disabled = true;
+  for (const id of ['read','demo','apply']) $(id).disabled = true;
   try { await fn(); } catch(e) { status(e.message || String(e)); }
   finally {
     busy = false; $('read').disabled = false;
-    $('demo').disabled = $('ai').disabled = $('apply').disabled = !originalRange;
+    $('demo').disabled = $('apply').disabled = !originalRange;
   }
 }
 Office.onReady(info => {
@@ -24,18 +24,11 @@ $('read').onclick = () => run(async () => {
     if (range.text.length > 12000) throw Error('Use a shorter selection (under 12,000 characters).');
     range.track(); await ctx.sync(); originalRange = range; originalText = range.text;
   });
-  $('original').value = originalText; status('Selection captured. Choose demo or local AI.');
+  $('original').value = originalText; status('Selection captured. Tidy the whitespace, review, then apply.');
 });
 $('demo').onclick = () => run(async () => {
   $('preview').value = originalText.split('\n').map(line => line.replace(/[\t ]+/g,' ').trim()).join('\n');
-  status('Demo only: whitespace cleanup. No AI used. Review before applying.');
-});
-$('ai').onclick = () => run(async () => {
-  if(!$('model').value.trim()) throw Error('Enter an installed Ollama model name.');
-  status('Asking local AI…');
-  const response = await fetch('/rewrite', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:originalText,model:$('model').value.trim()})});
-  const result = await response.json(); if(!response.ok) throw Error(result.error);
-  $('preview').value = result.text; status('Local AI draft ready. Review before applying.');
+  status('Whitespace cleaned. Review the preview before applying.');
 });
 $('apply').onclick = () => run(async () => {
   const text = $('preview').value; if(!text.trim()) throw Error('Create a preview first.');
