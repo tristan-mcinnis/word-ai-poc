@@ -523,6 +523,58 @@ const scenarios = [
         assert.ok(actionLabel(action).length > 0);
         assert.ok(primaryButtonLabel(action).length > 0);
       }
+
+      // 6. Repository AGENTS.md exists and documents architecture & verification
+      const repoAgents = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
+      assert.match(repoAgents, /npm test/);
+      assert.match(repoAgents, /npm run eval/);
+    },
+  },
+  {
+    id: 'E19',
+    suite: 'Skills',
+    name: 'Global AGENTS.md & SKILL.md discovery, host filtering, /skill-name activation, and toggle persistence',
+    async run() {
+      const { createSkillsLoader, resolveActiveSkills, buildSkillsPromptSection } = await import('../lib/skills.mjs');
+      const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'office-ai-eval-skills-'));
+      try {
+        fs.mkdirSync(path.join(fakeHome, '.agents', 'skills', 'board-deck'), { recursive: true });
+        fs.mkdirSync(path.join(fakeHome, 'skills', 'model-audit'), { recursive: true });
+        fs.writeFileSync(path.join(fakeHome, '.agents', 'AGENTS.md'), 'Prefer concise executive tone.');
+        fs.writeFileSync(
+          path.join(fakeHome, '.agents', 'skills', 'board-deck', 'SKILL.md'),
+          '---\nname: board-deck\ndescription: Executive board slides\nhosts: [powerpoint]\n---\nUse action titles on every slide.',
+        );
+        fs.writeFileSync(
+          path.join(fakeHome, 'skills', 'model-audit', 'SKILL.md'),
+          '---\nname: model-audit\ndescription: Financial model check\nhosts: [excel]\n---\nFlag every hardcoded input.',
+        );
+
+        const loader = createSkillsLoader({ homeDir: fakeHome, env: {} });
+        const { agentsFiles, skills } = loader.load();
+        assert.equal(agentsFiles.length, 1);
+        assert.equal(skills.length, 2);
+
+        const pptRes = resolveActiveSkills({
+          availableSkills: skills,
+          messages: [{ role: 'user', content: '/board-deck tighten slide 2' }],
+          host: 'powerpoint',
+        });
+        assert.deepEqual(pptRes.enabledSkills.map(s => s.name), ['board-deck']);
+        assert.deepEqual(pptRes.activeSkills.map(s => s.name), ['board-deck']);
+
+        const prompt = buildSkillsPromptSection({
+          agentsFiles,
+          agentsEnabled: true,
+          enabledSkills: pptRes.enabledSkills,
+          activeSkills: pptRes.activeSkills,
+        });
+        assert.match(prompt, /<global_instructions>[\s\S]*Prefer concise executive tone/);
+        assert.match(prompt, /<active_skill name="board-deck"[\s\S]*action titles on every slide/);
+        assert.doesNotMatch(prompt, /model-audit/);
+      } finally {
+        fs.rmSync(fakeHome, { recursive: true, force: true });
+      }
     },
   },
 ];

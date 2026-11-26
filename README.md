@@ -25,7 +25,8 @@ Chat naturally about your open document, workbook, or presentation, inspect diff
 - **Structured PowerPoint edits with slide & diff previews**: Update shape text with word-level diff (`update_shape`), targeted text search-and-replace across a slide or deck (`replace_slide_text`), insert on-brand slides using matched template layouts (`add_slide`), add text boxes (`add_textbox`), insert native tables (`add_table`), and delete slides (`delete_slide`, always confirmation-gated).
 - **Slash workflows (`/`)**: `/review-deck`, `/tighten-slide`, `/rewrite-title`, `/add-slide`, `/outline-deck`, `/speaker-notes`, `/add-table`, `/polish-copy`, `/zh`, `/en`.
 
-### Shared UX & Privacy
+### Shared UX, Global Skills & Privacy
+- **Global `AGENTS.md` & Global Skills (`SKILL.md`)**: Automatically discovers your global agent instructions (`~/.config/word-poc/AGENTS.md`, `~/.agents/AGENTS.md`, `~/.codex/AGENTS.md`, `~/.claude/AGENTS.md`, `~/.claude/CLAUDE.md`, `~/AGENTS.md`) and global skill folders (`~/.config/word-poc/skills`, `~/.agents/skills`, `~/.claude/skills`, `~/.codex/skills`, `~/skills`). Manage and toggle them live via the **Skills** button in the header, pin skills in the composer, or invoke any skill directly with `/skill-name` (supports optional `hosts: [word, excel, powerpoint]` frontmatter filtering and `OFFICE_AI_AGENTS_PATH` / `OFFICE_AI_SKILLS_DIRS` env overrides).
 - **Markdown tables & inline diffs**: Renders clean Markdown tables in chat and word/CJK inline diffs on text edits.
 - **Safety guardrails**: Destructive edits (`delete_slide`, `clear_range`) are never auto-applied even in Auto mode.
 - **Private & local**: Runs on `https://localhost:3443` on your Mac. API keys stay in `~/.config/word-poc/.env` (`chmod 600`) or environment variables and are never sent back to the browser or stored in git.
@@ -72,10 +73,12 @@ Keys are loaded at runtime on your machine in this order:
 
 ## Architecture
 
+- [`AGENTS.md`](AGENTS.md) — Contributor & coding-agent guide
 - [`server.mjs`](server.mjs) — Thin HTTPS bootstrap (IPv4 + IPv6 loopback)
-- [`lib/server-core.mjs`](lib/server-core.mjs) — Testable HTTP API handler & allowlisted static file router
+- [`lib/server-core.mjs`](lib/server-core.mjs) — Testable HTTP API handler (`/api/config`, `/api/keys`, `/api/skills`, `/api/chat`) & allowlisted static file router
 - [`lib/providers.mjs`](lib/providers.mjs) — Provider registry, local `.env`/config store, and OpenAI/Anthropic SSE stream adapters
 - [`lib/prompts.mjs`](lib/prompts.mjs) — Host-specific system prompts & context builders for Word, Excel, and PowerPoint
+- [`lib/skills.mjs`](lib/skills.mjs) — Global `AGENTS.md` and `SKILL.md` discovery, YAML frontmatter parser, `/skill-name` resolution, and prompt assembly
 - [`lib/format.js`](lib/format.js) — Multi-host `<edit>` parser, XSS-safe Markdown (with tables & citations), and word/CJK diff engine
 - [`lib/excel-utils.js`](lib/excel-utils.js) — Pure Excel A1 parsing, grid/formula coercion, workbook snapshot formatting, and error detection
 - [`lib/ppt-utils.js`](lib/ppt-utils.js) — Pure PowerPoint slide spec parsing, Slide Master layout matching, placeholder classification, and deck serialization
@@ -85,8 +88,8 @@ Keys are loaded at runtime on your machine in this order:
 ## Development, Tests & Evaluations
 
 ```bash
-npm test      # run unit & integration tests across Word, Excel, PowerPoint, and HTTP server
-npm run eval  # run end-to-end multi-host evaluation suite (18 scenarios & quality rubrics)
+npm test      # run unit & integration tests across Word, Excel, PowerPoint, Skills, and HTTP server
+npm run eval  # run end-to-end multi-host evaluation suite (19 scenarios & quality rubrics)
 npm start     # run the HTTPS server in the foreground
 ```
 

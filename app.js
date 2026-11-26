@@ -37,6 +37,8 @@ const state = {
   filteredActions: [],
   userScrolledUp: false,
   keyInfo: null,
+  skillsInfo: null,
+  pinnedSkills: [],
   lastPrompt: '',
 };
 
@@ -223,6 +225,7 @@ $('preview-host').onchange = () => {
   state.hostContext = {};
   closeActionsMenu();
   updateHostChrome();
+  loadSkills();
   if (state.messages.length === 0) renderEmptyState();
   showToast(`Previewing ${state.adapter.label} mode`, false, 1800);
 };
@@ -742,11 +745,40 @@ function updateSendState() {
   const busy = Boolean(state.controller);
   $('send').hidden = busy;
   $('stop').hidden = !busy;
-  $('send').disabled = busy || !inputEl.value.trim();
+  $('send').disabled = busy || (!inputEl.value.trim() && state.pinnedSkills.length === 0);
+}
+
+function combinedSlashActions() {
+  const hostActions = (state.adapter.quickActions || []).map(a => ({ ...a, isSkill: false }));
+  const globalSkills = (state.skillsInfo?.skills || [])
+    .filter(s => s.enabled)
+    .map(s => ({
+      cmd: s.cmd,
+      title: s.description ? `${s.name} — ${s.description.slice(0, 60)}` : s.name,
+      skillName: s.name,
+      prompt: `Apply the /${s.name} skill to the current ${state.adapter.noun}.`,
+      isSkill: true,
+    }));
+  return [...hostActions, ...globalSkills];
+}
+
+function chooseSlashAction(chosen) {
+  closeActionsMenu();
+  inputEl.value = '';
+  autoResizeInput();
+  if (chosen.isSkill) {
+    pinSkill(chosen.skillName);
+    updateSendState();
+    inputEl.focus();
+    showToast(`Pinned /${chosen.skillName} — type your request or press Enter to run.`, false, 2600);
+    return;
+  }
+  updateSendState();
+  sendTurn(chosen.prompt);
 }
 
 function renderActionsMenu(filter = '') {
-  const actions = state.adapter.quickActions || [];
+  const actions = combinedSlashActions();
   const q = filter.trim().toLowerCase();
   state.filteredActions = q
     ? actions.filter(a => a.cmd.includes(q) || a.title.toLowerCase().includes(q))
@@ -765,16 +797,10 @@ function renderActionsMenu(filter = '') {
     btn.type = 'button';
     btn.className = 'action-item' + (idx === state.menuIndex ? ' active' : '');
     btn.setAttribute('role', 'option');
-    btn.innerHTML = `<span class="action-item-title"></span><span class="action-item-cmd"></span>`;
+    btn.innerHTML = `<span class="action-item-title"></span><span class="action-item-meta">${action.isSkill ? '<span class="action-skill-tag">Skill</span>' : ''}<span class="action-item-cmd"></span></span>`;
     btn.querySelector('.action-item-title').textContent = action.title;
     btn.querySelector('.action-item-cmd').textContent = action.cmd;
-    btn.onclick = () => {
-      closeActionsMenu();
-      inputEl.value = '';
-      autoResizeInput();
-      updateSendState();
-      sendTurn(action.prompt);
-    };
+    btn.onclick = () => chooseSlashAction(action);
     menu.appendChild(btn);
   });
 
@@ -823,13 +849,7 @@ inputEl.addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       const chosen = state.filteredActions[state.menuIndex];
-      if (chosen) {
-        closeActionsMenu();
-        inputEl.value = '';
-        autoResizeInput();
-        updateSendState();
-        sendTurn(chosen.prompt);
-      }
+      if (chosen) chooseSlashAction(chosen);
       return;
     }
     if (e.key === 'Escape') {
@@ -856,6 +876,8 @@ document.addEventListener('click', e => {
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && !$('keys-panel').hidden) {
     closeKeysPanel();
+  } else if (e.key === 'Escape' && !$('skills-panel').hidden) {
+    closeSkillsPanel();
   } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
     e.preventDefault();
     inputEl.focus();
@@ -894,7 +916,11 @@ async function loadProviders() {
 }
 
 async function sendTurn(userText) {
-  const text = String(userText || '').trim();
+  let text = String(userText || '').trim();
+  const pinnedNow = state.pinnedSkills.slice();
+  if (!text && pinnedNow.length > 0) {
+    text = `Apply ${pinnedNow.map(s => `/${s}`).join(', ')} to the current ${state.adapter.noun}.`;
+  }
   if (!text || state.controller) return;
 
   closeActionsMenu();
@@ -932,6 +958,7 @@ async function sendTurn(userText) {
         contextMode: state.contextMode,
         comments: state.comments,
         hostContext: usedHostContext,
+        activeSkills: pinnedNow,
       }),
       signal: controller.signal,
     });
@@ -964,7 +991,11 @@ async function sendTurn(userText) {
         }
         if (payload.error) throw new Error(payload.error);
         if (payload.done) {
-          metaLabel = payload.providerLabel ? `${payload.providerLabel} · ${payload.model}` : payload.model;
+          const baseMeta = payload.providerLabel ? `${payload.providerLabel} · ${payload.model}` : payload.model;
+          const skillTag = Array.isArray(payload.activeSkills) && payload.activeSkills.length
+            ? ` · ${payload.activeSkills.map(s => `/${s}`).join(' ')}`
+            : '';
+          metaLabel = `${baseMeta}${skillTag}`;
         }
       }
     }
@@ -1079,6 +1110,7 @@ function renderKeysPanel(data, focusProvider = null) {
 
 async function openKeysPanel(focusProvider = null) {
   closeActionsMenu();
+  closeSkillsPanel();
   try {
     const res = await fetch('/api/keys');
     const data = await res.json();
@@ -1144,6 +1176,194 @@ $('keys-remove').onclick = async () => {
   }
 };
 
+/* ---------- Global AGENTS.md & Skills panel ---------- */
+
+function renderActiveSkillChips() {
+  const row = $('active-skills-row');
+  row.innerHTML = '';
+  if (!state.pinnedSkills.length) {
+    row.hidden = true;
+    return;
+  }
+  row.hidden = false;
+  for (const name of state.pinnedSkills) {
+    const chip = document.createElement('span');
+    chip.className = 'active-skill-chip';
+    chip.innerHTML = `<span></span><button type="button" aria-label="Remove skill">&times;</button>`;
+    chip.querySelector('span').textContent = `/${name}`;
+    chip.querySelector('button').onclick = () => unpinSkill(name);
+    row.appendChild(chip);
+  }
+}
+
+function pinSkill(name) {
+  if (!name || state.pinnedSkills.includes(name)) return;
+  state.pinnedSkills.push(name);
+  renderActiveSkillChips();
+  updateSkillsButtonBadge();
+  updateSendState();
+}
+
+function unpinSkill(name) {
+  state.pinnedSkills = state.pinnedSkills.filter(s => s !== name);
+  renderActiveSkillChips();
+  updateSkillsButtonBadge();
+  updateSendState();
+}
+
+function updateSkillsButtonBadge() {
+  const btn = $('skills-btn');
+  const label = btn.querySelector('span');
+  const enabledCount = (state.skillsInfo?.skills || []).filter(s => s.enabled).length;
+  const hasAgents = Boolean(state.skillsInfo?.agentsEnabled && state.skillsInfo?.agentsFiles?.length);
+  const pinned = state.pinnedSkills.length;
+  btn.classList.toggle('has-active', hasAgents || enabledCount > 0 || pinned > 0);
+  label.textContent = pinned > 0 ? `Skills (${pinned})` : 'Skills';
+}
+
+function renderSkillsPanel(data) {
+  state.skillsInfo = data;
+  // Drop any pinned skills that were disabled or removed on disk
+  const enabledNames = new Set((data.skills || []).filter(s => s.enabled).map(s => s.name));
+  state.pinnedSkills = state.pinnedSkills.filter(n => enabledNames.has(n));
+  renderActiveSkillChips();
+  updateSkillsButtonBadge();
+
+  const agentsSec = $('agents-section');
+  agentsSec.innerHTML = '';
+  const agentsTitle = document.createElement('div');
+  agentsTitle.className = 'skills-section-title';
+  agentsTitle.innerHTML = `<span>Global AGENTS.md</span>`;
+  const toggleAgents = document.createElement('button');
+  toggleAgents.type = 'button';
+  toggleAgents.className = 'skill-mini-btn' + (data.agentsEnabled ? ' active' : '');
+  toggleAgents.textContent = data.agentsEnabled ? 'Active' : 'Off';
+  toggleAgents.onclick = async () => {
+    await updateSkillSettings({ agentsEnabled: !data.agentsEnabled });
+  };
+  agentsTitle.appendChild(toggleAgents);
+  agentsSec.appendChild(agentsTitle);
+
+  if (data.agentsFiles && data.agentsFiles.length > 0) {
+    for (const f of data.agentsFiles) {
+      const row = document.createElement('div');
+      row.className = 'skill-row' + (data.agentsEnabled ? '' : ' disabled');
+      row.innerHTML = `<div class="skill-row-main"><div class="skill-row-name"></div><div class="skill-row-source"></div></div>`;
+      row.querySelector('.skill-row-name').textContent = f.path;
+      row.querySelector('.skill-row-source').textContent = `${f.chars.toLocaleString()} chars loaded into system prompt`;
+      agentsSec.appendChild(row);
+    }
+  } else {
+    const empty = document.createElement('div');
+    empty.className = 'skills-empty';
+    empty.textContent = 'No global AGENTS.md found yet.';
+    agentsSec.appendChild(empty);
+  }
+
+  const skillsSec = $('skills-section');
+  skillsSec.innerHTML = '';
+  const skillsTitle = document.createElement('div');
+  skillsTitle.className = 'skills-section-title';
+  skillsTitle.innerHTML = `<span>Global Skills (${(data.skills || []).length})</span>`;
+  skillsSec.appendChild(skillsTitle);
+
+  if (data.skills && data.skills.length > 0) {
+    for (const s of data.skills) {
+      const isPinned = state.pinnedSkills.includes(s.name);
+      const row = document.createElement('div');
+      row.className = 'skill-row' + (s.enabled ? '' : ' disabled');
+      row.innerHTML = `<div class="skill-row-main"><div class="skill-row-name"></div><div class="skill-row-desc"></div><div class="skill-row-source"></div></div><div class="skill-row-actions"></div>`;
+      row.querySelector('.skill-row-name').textContent = s.cmd;
+      row.querySelector('.skill-row-desc').textContent = s.description || 'Global skill';
+      row.querySelector('.skill-row-source').textContent = s.source;
+
+      const actions = row.querySelector('.skill-row-actions');
+      if (s.enabled) {
+        const useBtn = document.createElement('button');
+        useBtn.type = 'button';
+        useBtn.className = 'skill-mini-btn' + (isPinned ? ' active' : '');
+        useBtn.textContent = isPinned ? 'Pinned' : 'Use';
+        useBtn.onclick = () => {
+          if (state.pinnedSkills.includes(s.name)) unpinSkill(s.name);
+          else {
+            pinSkill(s.name);
+            closeSkillsPanel();
+            inputEl.focus();
+          }
+          renderSkillsPanel(state.skillsInfo);
+        };
+        actions.appendChild(useBtn);
+      }
+
+      const enBtn = document.createElement('button');
+      enBtn.type = 'button';
+      enBtn.className = 'skill-mini-btn';
+      enBtn.textContent = s.enabled ? 'Disable' : 'Enable';
+      enBtn.onclick = async () => {
+        await updateSkillSettings({ toggleSkill: s.name, enabled: !s.enabled });
+      };
+      actions.appendChild(enBtn);
+
+      skillsSec.appendChild(row);
+    }
+  } else {
+    const empty = document.createElement('div');
+    empty.className = 'skills-empty';
+    empty.textContent = 'No global SKILL.md folders found yet.';
+    skillsSec.appendChild(empty);
+  }
+
+  const dirs = (data.searchPaths?.skillsDirs || []).slice(0, 4).join(', ');
+  $('skills-paths-note').textContent = `Scans AGENTS.md (~/.agents, ~/.claude, ~/.codex, ~/.config/word-poc) and skills (${dirs}). Invoke any skill with /skill-name.`;
+}
+
+async function loadSkills(showFeedback = false) {
+  try {
+    const res = await fetch(`/api/skills?host=${encodeURIComponent(state.hostId)}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    renderSkillsPanel(data);
+    if (showFeedback) {
+      showToast(`Loaded ${data.agentsFiles.length} AGENTS.md & ${data.skills.length} global skill${data.skills.length === 1 ? '' : 's'}.`, false, 2000);
+    }
+  } catch {
+    // Non-fatal if server not reachable yet
+  }
+}
+
+async function updateSkillSettings(patch) {
+  try {
+    const res = await fetch('/api/skills', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...patch, host: state.hostId }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not update skills');
+    renderSkillsPanel(data);
+  } catch (err) {
+    showToast(err.message || String(err), true);
+  }
+}
+
+async function openSkillsPanel() {
+  closeActionsMenu();
+  closeKeysPanel();
+  await loadSkills();
+  $('skills-panel').hidden = false;
+}
+
+function closeSkillsPanel() {
+  $('skills-panel').hidden = true;
+}
+
+$('skills-btn').onclick = () => {
+  if ($('skills-panel').hidden) openSkillsPanel();
+  else closeSkillsPanel();
+};
+$('skills-close').onclick = closeSkillsPanel;
+$('skills-refresh').onclick = () => loadSkills(true);
+
 /* ---------- Boot ---------- */
 
 function boot(detectedHost) {
@@ -1152,6 +1372,7 @@ function boot(detectedHost) {
   state.adapter = createHostAdapter(state.hostId);
 
   loadProviders();
+  loadSkills();
   updateHostChrome();
   renderEmptyState();
   updateSendState();

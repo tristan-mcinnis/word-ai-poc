@@ -186,3 +186,110 @@ test('server /api/chat routes host-specific prompts and streams OpenAI and Anthr
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('server /api/skills discovers global AGENTS.md and skills, persists toggles, and injects them into /api/chat', async () => {
+  const { createSkillsLoader } = await import('../lib/skills.mjs');
+  const tmpDir = makeTempConfigDir();
+  const fakeHome = makeTempConfigDir();
+  fs.mkdirSync(path.join(fakeHome, '.agents', 'skills', 'exec-brief'), { recursive: true });
+  fs.writeFileSync(path.join(fakeHome, '.agents', 'AGENTS.md'), 'Always lead with the bottom line.');
+  fs.writeFileSync(
+    path.join(fakeHome, '.agents', 'skills', 'exec-brief', 'SKILL.md'),
+    '---\nname: exec-brief\ndescription: Executive brief format\n---\nFormat into BLUF + 3 bullets.',
+  );
+
+  const store = createConfigStore({
+    configDir: tmpDir,
+    cwd: tmpDir,
+    env: { DEEPSEEK_API_KEY: 'ds-key' },
+    enableExternalHelper: false,
+  });
+  const skillsLoader = createSkillsLoader({ homeDir: fakeHome, configDir: tmpDir, env: {} });
+
+  const captured = [];
+  const mockFetch = async (_url, opts) => {
+    captured.push(JSON.parse(opts.body));
+    const body = (async function* () {
+      yield new TextEncoder().encode('data: {"choices":[{"delta":{"content":"BLUF: Ready."}}]}\n');
+      yield new TextEncoder().encode('data: [DONE]\n');
+    })();
+    return { ok: true, status: 200, body, text: async () => '' };
+  };
+
+  const handler = createRequestHandler({
+    allowedHost: 'localhost:3443',
+    store,
+    skillsLoader,
+    fetchImpl: mockFetch,
+    logger: null,
+  });
+  const server = http.createServer(handler);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+
+  const request = (urlPath, { method = 'GET', headers = {}, body = null } = {}) =>
+    new Promise((resolve, reject) => {
+      const req = http.request(
+        { hostname: '127.0.0.1', port, path: urlPath, method, headers: { Host: 'localhost:3443', ...headers } },
+        res => {
+          let data = '';
+          res.on('data', chunk => { data += chunk; });
+          res.on('end', () => resolve({ status: res.statusCode, body: data }));
+        },
+      );
+      req.on('error', reject);
+      if (body) req.write(body);
+      req.end();
+    });
+
+  try {
+    const listRes = await request('/api/skills?host=word');
+    assert.equal(listRes.status, 200);
+    const listData = JSON.parse(listRes.body);
+    assert.equal(listData.agentsFiles.length, 1);
+    assert.equal(listData.skills.length, 1);
+    assert.equal(listData.skills[0].name, 'exec-brief');
+    assert.equal(listData.skills[0].enabled, true);
+
+    // Chat invoking /exec-brief injects both <global_instructions> and <active_skill>
+    const chatRes = await request('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        host: 'word',
+        messages: [{ role: 'user', content: '/exec-brief summarize this memo' }],
+      }),
+    });
+    assert.equal(chatRes.status, 200);
+    assert.match(chatRes.body, /"activeSkills":\["exec-brief"\]/);
+    assert.match(chatRes.body, /"agentsLoaded":true/);
+    const sysCombined = captured[0].messages.filter(m => m.role === 'system').map(m => m.content).join('\n');
+    assert.match(sysCombined, /<global_instructions>[\s\S]*Always lead with the bottom line/);
+    assert.match(sysCombined, /<active_skill name="exec-brief"[\s\S]*BLUF \+ 3 bullets/);
+
+    // Disable AGENTS.md and exec-brief via POST /api/skills; verify persistence across provider switch
+    const toggleRes = await request('/api/skills', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentsEnabled: false, toggleSkill: 'exec-brief', enabled: false }),
+    });
+    assert.equal(toggleRes.status, 200);
+    const toggled = JSON.parse(toggleRes.body);
+    assert.equal(toggled.agentsEnabled, false);
+    assert.equal(toggled.skills[0].enabled, false);
+
+    // Switching provider should NOT wipe agentsEnabled or disabledSkills
+    await request('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'openai' }),
+    });
+    const afterSwitch = JSON.parse((await request('/api/skills')).body);
+    assert.equal(afterSwitch.agentsEnabled, false);
+    assert.equal(afterSwitch.skills[0].enabled, false);
+  } finally {
+    await new Promise(r => server.close(r));
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(fakeHome, { recursive: true, force: true });
+  }
+});
