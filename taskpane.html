@@ -3,43 +3,67 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Word pane</title>
+<title>Word Editor</title>
 <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header>
-  <h1>Word pane</h1>
-  <select id="provider" title="Model"></select>
-  <button id="new" class="ghost" title="Clear this conversation">New</button>
+<header id="topbar">
+  <div class="brand">
+    <span class="brand-dot" aria-hidden="true"></span>
+    <h1>Editor</h1>
+  </div>
+  <div class="header-actions">
+    <button id="new" class="icon-pill" title="Start a new conversation">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+      <span>New</span>
+    </button>
+  </div>
 </header>
 
-<div id="transcript">
-  <div class="turn assistant"><div class="bubble">Ask for a change to the document. Selecting text in Word attaches it automatically as context.</div></div>
+<main id="transcript" aria-live="polite"></main>
+
+<div id="dock">
+  <div id="toast" hidden role="status">
+    <span id="toast-text"></span>
+    <button id="toast-close" aria-label="Dismiss">&times;</button>
+  </div>
+
+  <div id="actions-menu" hidden role="listbox" aria-label="Quick actions"></div>
+
+  <div id="composer-card">
+    <div id="context-row">
+      <button id="context-pill" type="button" title="Click to switch context scope (Auto / Selection only / Whole doc)">
+        <span id="context-badge"></span>
+        <span id="context-preview"></span>
+      </button>
+      <button id="refresh" type="button" class="micro-btn" title="Refresh document & selection">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.4-3.65M13.5 2.5v2.4h-2.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+
+    <textarea id="input" rows="1" placeholder="Ask anything, or type / for actions…"></textarea>
+
+    <div id="composer-bar">
+      <div class="bar-left">
+        <select id="provider" title="Switch model"></select>
+        <button id="actions-btn" type="button" class="tool-btn" title="Quick editing actions (or type /)">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 1.5 9.6 6.4 14.5 8 9.6 9.6 8 14.5 6.4 9.6 1.5 8 6.4 6.4 8 1.5Z" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"/></svg>
+          <span>Actions</span>
+        </button>
+      </div>
+      <div class="bar-right">
+        <button id="send" type="button" class="send-btn" title="Send (Enter)" aria-label="Send">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 13V3.5M4 7.5 8 3.5l4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button id="stop" type="button" class="send-btn stop-btn" hidden title="Stop generating (Esc)" aria-label="Stop">
+          <svg width="11" height="11" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true"><rect x="2" y="2" width="8" height="8" rx="1.5"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
 </div>
 
-<div id="contextbar">
-  <span>Context</span>
-  <span id="context" class="none">no selection</span>
-  <button id="refresh" class="ghost" title="Read the selection again">Refresh</button>
-</div>
-
-<div id="chips">
-  <button data-send="Tighten this. Remove filler and hedging, keep the meaning.">Tighten</button>
-  <button data-send="Shorten this by about a third. Keep every fact that matters.">Shorten</button>
-  <button data-send="Rewrite this so it reads clearly and directly, same meaning, same length.">Rewrite</button>
-  <button data-send="Make this plainer: short sentences, common words, one idea each.">Plain</button>
-  <button data-send="Turn this into a short bullet list, one idea per bullet.">Bullets</button>
-  <button data-send="Summarise this in two sentences.">Summarise</button>
-</div>
-
-<div id="composer">
-  <textarea id="input" placeholder="Or say what to do, for example: keep the figures but drop the second paragraph. Then say shorter."></textarea>
-  <button id="send">Send</button>
-  <button id="stop" hidden>Stop</button>
-</div>
-
-<p id="status">Starting…</p>
-<script src="app.js"></script>
+<script type="module" src="app.js"></script>
 </body>
 </html>
