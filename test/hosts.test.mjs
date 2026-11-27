@@ -1,11 +1,37 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { detectOfficeHost, createHostAdapter } from '../lib/hosts/index.js';
+import { parseStyledWordBlocks } from '../lib/hosts/word.js';
 import {
   createMockWordEnv,
   createMockExcelEnv,
   createMockPowerPointEnv,
 } from './mock-office.mjs';
+
+test('parseStyledWordBlocks parses Title/custom styles, Markdown headings, quotes, and native lists', () => {
+  const blocks = parseStyledWordBlocks([
+    '[Title] The Role of Large Language Models',
+    '## What They Do',
+    'A plain body paragraph.',
+    '- First key fact',
+    '- Second key fact',
+    '1. Step one',
+    '> A notable quote',
+  ].join('\n'));
+
+  assert.deepEqual(blocks, [
+    { text: 'The Role of Large Language Models', style: 'Title', listType: null },
+    { text: 'What They Do', style: 'Heading 2', listType: null },
+    { text: 'A plain body paragraph.', style: null, listType: null },
+    { text: 'First key fact', style: null, listType: 'bullet' },
+    { text: 'Second key fact', style: null, listType: 'bullet' },
+    { text: 'Step one', style: null, listType: 'number' },
+    { text: 'A notable quote', style: 'Quote', listType: null },
+  ]);
+
+  const withDefault = parseStyledWordBlocks('Standalone Title', 'Title');
+  assert.deepEqual(withDefault, [{ text: 'Standalone Title', style: 'Title', listType: null }]);
+});
 
 test('detectOfficeHost accurately detects Word, Excel, and PowerPoint', () => {
   const Office = { HostType: { Word: 'Word', Excel: 'Excel', PowerPoint: 'PowerPoint' } };

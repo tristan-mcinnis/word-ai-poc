@@ -237,9 +237,12 @@ $('preview-host').onchange = () => {
 /* ---------- Smart auto-scroll & citation navigation ---------- */
 
 const transcriptEl = $('transcript');
+let programmaticScroll = false;
+
 transcriptEl.addEventListener('scroll', () => {
+  if (programmaticScroll) return;
   const distFromBottom = transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight;
-  state.userScrolledUp = distFromBottom > 60;
+  state.userScrolledUp = distFromBottom > 48;
 });
 
 transcriptEl.addEventListener('click', async e => {
@@ -257,9 +260,15 @@ transcriptEl.addEventListener('click', async e => {
 });
 
 function scrollToBottom(force = false) {
-  if (force || !state.userScrolledUp) {
+  if (!force && state.userScrolledUp) return;
+  if (force) state.userScrolledUp = false;
+  const pin = () => {
+    programmaticScroll = true;
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
-  }
+    requestAnimationFrame(() => { programmaticScroll = false; });
+  };
+  pin();
+  requestAnimationFrame(pin);
 }
 
 /* ---------- Empty state ---------- */
