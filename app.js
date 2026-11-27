@@ -40,6 +40,7 @@ const state = {
   filteredActions: [],
   userScrolledUp: false,
   keyInfo: null,
+  brandTheme: null,
   skillsInfo: null,
   mcpInfo: null,
   pinnedSkills: [],
@@ -318,6 +319,7 @@ async function applyEdit(edit, expectedSelection = '', overrideAction = null) {
       overrideAction,
       trackChanges: state.trackChanges,
       highlightEdits: state.highlightEdits,
+      brandTheme: state.brandTheme,
     });
     if (res?.ok) {
       showToast(res.message || 'Applied');
@@ -958,6 +960,7 @@ document.addEventListener('click', e => {
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && !$('keys-panel').hidden) {
     closeKeysPanel();
+  closeThemePanel();
   } else if (e.key === 'Escape' && !$('skills-panel').hidden) {
     closeSkillsPanel();
   } else if (e.key === 'Escape' && !$('history-panel').hidden) {
@@ -974,6 +977,8 @@ async function loadProviders() {
   try {
     const res = await fetch('/api/config');
     const data = await res.json();
+    state.brandTheme = data.active?.theme || null;
+    updateThemeBtnIndicator();
     const sel = $('provider');
     sel.innerHTML = '';
     for (const p of data.providers) {
@@ -1296,6 +1301,107 @@ function closeKeysPanel() {
   $('keys-input').value = '';
 }
 
+function updateThemeBtnIndicator() {
+  const btn = $('theme-btn');
+  if (!btn) return;
+  const on = Boolean(state.brandTheme?.enabled);
+  btn.style.color = on ? 'var(--ink)' : '';
+  btn.title = on
+    ? `Brand theme active (${state.brandTheme.font || 'custom colors'})`
+    : 'Local brand theme for blank docs & slides';
+}
+
+function populateThemeForm(theme) {
+  const t = theme || {};
+  $('theme-enabled').checked = Boolean(t.enabled);
+  $('theme-font').value = t.font || '';
+  $('theme-heading-font').value = t.headingFont || '';
+  $('theme-font-size').value = t.fontSize || '';
+  $('theme-table-size').value = t.tableFontSize || '';
+  $('theme-heading-color').value = t.headingColor || '';
+  $('theme-color').value = t.color || '';
+  $('theme-table-fill').value = t.tableHeaderFill || '';
+  $('theme-table-color').value = t.tableHeaderColor || '';
+}
+
+function closeThemePanel() {
+  $('theme-panel').hidden = true;
+}
+
+function openThemePanel() {
+  closeActionsMenu();
+  closeKeysPanel();
+  closeThemePanel();
+  closeSkillsPanel();
+  closeHistoryPanel();
+  populateThemeForm(state.brandTheme);
+  $('theme-panel').hidden = false;
+}
+
+$('theme-btn').onclick = () => {
+  if ($('theme-panel').hidden) openThemePanel();
+  else closeThemePanel();
+};
+$('theme-close').onclick = closeThemePanel;
+
+$('theme-form').onsubmit = async e => {
+  e.preventDefault();
+  const theme = {
+    enabled: $('theme-enabled').checked,
+    font: $('theme-font').value.trim(),
+    headingFont: $('theme-heading-font').value.trim(),
+    fontSize: $('theme-font-size').value.trim(),
+    tableFontSize: $('theme-table-size').value.trim(),
+    headingColor: $('theme-heading-color').value.trim(),
+    color: $('theme-color').value.trim(),
+    tableHeaderFill: $('theme-table-fill').value.trim(),
+    tableHeaderColor: $('theme-table-color').value.trim(),
+  };
+  try {
+    const res = await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ theme }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not save theme');
+    state.brandTheme = data.active?.theme || theme;
+    updateThemeBtnIndicator();
+    closeThemePanel();
+    showToast(state.brandTheme.enabled ? 'Brand theme saved locally.' : 'Brand theme disabled.', false, 2200);
+  } catch (err) {
+    showToast(err.message || String(err), true);
+  }
+};
+
+$('theme-reset').onclick = async () => {
+  const empty = {
+    enabled: false,
+    font: '',
+    headingFont: '',
+    fontSize: '',
+    tableFontSize: '',
+    headingColor: '',
+    color: '',
+    tableHeaderFill: '',
+    tableHeaderColor: '',
+  };
+  try {
+    const res = await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ theme: empty }),
+    });
+    const data = await res.json();
+    state.brandTheme = data.active?.theme || empty;
+    populateThemeForm(state.brandTheme);
+    updateThemeBtnIndicator();
+    showToast('Reset to neutral default theme.', false, 2000);
+  } catch (err) {
+    showToast(err.message || String(err), true);
+  }
+};
+
 $('keys-btn').onclick = () => {
   if ($('keys-panel').hidden) openKeysPanel();
   else closeKeysPanel();
@@ -1615,6 +1721,7 @@ async function updateSkillSettings(patch) {
 async function openSkillsPanel() {
   closeActionsMenu();
   closeKeysPanel();
+  closeThemePanel();
   closeHistoryPanel();
   await Promise.all([loadSkills(), loadMcp()]);
   $('skills-panel').hidden = false;
@@ -1749,6 +1856,7 @@ async function loadSessions() {
 async function openHistoryPanel() {
   closeActionsMenu();
   closeKeysPanel();
+  closeThemePanel();
   closeSkillsPanel();
   await loadSessions();
   $('history-panel').hidden = false;
