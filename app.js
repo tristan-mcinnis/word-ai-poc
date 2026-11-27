@@ -493,6 +493,11 @@ function renderStructuredEditBody(bodyEl, edit) {
   const action = edit.action;
   const attrs = edit.attrs || {};
 
+  if (action === 'insert_docx') {
+    bodyEl.textContent = edit.content?.trim() || 'Branded Word document rendered from template and ready to insert.';
+    return true;
+  }
+
   if (action === 'set_cells' || action === 'add_sheet' || action === 'add_table') {
     const grid = parseCellGrid(edit.content);
     if (grid.length > 0 && grid[0].length > 0) {
