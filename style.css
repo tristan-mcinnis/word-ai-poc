@@ -352,7 +352,9 @@ button, select, textarea {
   text-align: left;
   padding: 5px 8px;
   border-bottom: 1px solid var(--line);
-  white-space: nowrap;
+  white-space: normal;
+  word-break: break-word;
+  vertical-align: top;
 }
 .md-table th {
   background: var(--surface-subtle);

@@ -8,7 +8,7 @@ import {
   createMockPowerPointEnv,
 } from './mock-office.mjs';
 
-test('parseStyledWordBlocks parses Title/custom styles, Markdown headings, quotes, and native lists', () => {
+test('parseStyledWordBlocks parses Title/custom styles, Markdown headings, tables, quotes, and native lists', () => {
   const blocks = parseStyledWordBlocks([
     '[Title] The Role of Large Language Models',
     '## What They Do',
@@ -17,20 +17,25 @@ test('parseStyledWordBlocks parses Title/custom styles, Markdown headings, quote
     '- Second key fact',
     '1. Step one',
     '> A notable quote',
+    '| Group | Target |',
+    '| --- | --- |',
+    '| G1 | 4 |',
+    '| G2 | 4 |',
   ].join('\n'));
 
   assert.deepEqual(blocks, [
-    { text: 'The Role of Large Language Models', style: 'Title', listType: null },
-    { text: 'What They Do', style: 'Heading 2', listType: null },
-    { text: 'A plain body paragraph.', style: null, listType: null },
-    { text: 'First key fact', style: null, listType: 'bullet' },
-    { text: 'Second key fact', style: null, listType: 'bullet' },
-    { text: 'Step one', style: null, listType: 'number' },
-    { text: 'A notable quote', style: 'Quote', listType: null },
+    { kind: 'paragraph', text: 'The Role of Large Language Models', style: 'Title', listType: null, bold: false },
+    { kind: 'paragraph', text: 'What They Do', style: 'Heading 2', listType: null, bold: false },
+    { kind: 'paragraph', text: 'A plain body paragraph.', style: null, listType: null, bold: false },
+    { kind: 'paragraph', text: 'First key fact', style: null, listType: 'bullet', bold: false },
+    { kind: 'paragraph', text: 'Second key fact', style: null, listType: 'bullet', bold: false },
+    { kind: 'paragraph', text: 'Step one', style: null, listType: 'number', bold: false },
+    { kind: 'paragraph', text: 'A notable quote', style: 'Quote', listType: null, bold: false },
+    { kind: 'table', rows: [['Group', 'Target'], ['G1', '4'], ['G2', '4']] },
   ]);
 
   const withDefault = parseStyledWordBlocks('Standalone Title', 'Title');
-  assert.deepEqual(withDefault, [{ text: 'Standalone Title', style: 'Title', listType: null }]);
+  assert.deepEqual(withDefault, [{ kind: 'paragraph', text: 'Standalone Title', style: 'Title', listType: null, bold: false }]);
 });
 
 test('detectOfficeHost accurately detects Word, Excel, and PowerPoint', () => {
