@@ -703,6 +703,25 @@ function buildEditCard(edit, index, turn, expectedSelection, hostContextSnapshot
       foot.appendChild(insertBtn);
     }
 
+    if (edit.action === 'insert_docx') {
+      const insertHereBtn = document.createElement('button');
+      insertHereBtn.type = 'button';
+      insertHereBtn.className = 'btn-secondary';
+      insertHereBtn.textContent = 'Insert here';
+      insertHereBtn.title = 'Insert into the currently open document instead of opening a new window';
+      insertHereBtn.onclick = async () => {
+        const ok = await applyEdit(edit, expectedSelection, 'insert_here');
+        if (ok) {
+          turn.appliedSet.add(index);
+          card.classList.add('applied');
+          primary.classList.add('done');
+          primary.textContent = 'Applied ✓';
+          if (alwaysBtn) alwaysBtn.remove();
+        }
+      };
+      foot.appendChild(insertHereBtn);
+    }
+
     if (edit.content && edit.content.trim()) {
       const copyBtn = document.createElement('button');
       copyBtn.type = 'button';
