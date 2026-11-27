@@ -577,6 +577,250 @@ const scenarios = [
       }
     },
   },
+  {
+    id: 'E20',
+    suite: 'Performance',
+    name: 'Giant 50k-row Excel sheet, Ctrl+A selection, 100-slide deck windowing, and Word duplicate disambiguation',
+    async run() {
+      const { sanitizeSheetName } = await import('../lib/hosts/excel.js');
+      assert.equal(sanitizeSheetName('FY26:P&L/Summary', ['FY26 P&L Summary']), 'FY26 P&L Summary (2)');
+
+      let excelClipped = false;
+      const giantExcelEnv = {
+        Office: { HostType: { Excel: 'Excel' } },
+        Excel: {
+          async run(cb) {
+            const makeBig = (addr, rows, cols) => ({
+              address: addr,
+              rowCount: rows,
+              columnCount: cols,
+              isNullObject: false,
+              load(p) { if (String(p).includes('values')) throw new Error('Unclipped bridge read!'); },
+              getAbsoluteResizedRange(r, c) {
+                excelClipped = r <= 70 && c <= 22;
+                return { address: 'Data!A1:B2', load() {}, values: [['A', 'B'], [1, 2]], formulas: [['A', 'B'], [1, 2]] };
+              },
+            });
+            const sh = { name: 'Data', position: 0, load() {}, getUsedRangeOrNullObject: () => makeBig('Data!A1:Z50000', 50000, 26) };
+            return cb({
+              workbook: {
+                worksheets: { items: [sh], load() {}, getActiveWorksheet: () => sh },
+                getSelectedRange: () => makeBig('Data!A1:A1048576', 1048576, 1),
+              },
+              async sync() {},
+            });
+          },
+        },
+      };
+      const excelCtx = await createHostAdapter('excel', giantExcelEnv).readContext();
+      assert.equal(excelClipped, true);
+      assert.match(excelCtx.hostContext.selectionClipped, /1048576×1/);
+
+      // 100-slide PowerPoint deck windows to 60 slides cleanly
+      const slides100 = Array.from({ length: 100 }, (_, i) => ({
+        id: `s-${i + 1}`,
+        layoutName: 'Title and Content',
+        shapes: [{ id: `sh-${i + 1}`, name: 'Title 1', type: 'Placeholder', text: `Slide ${i + 1}` }],
+      }));
+      const pptEnv = createMockPowerPointEnv({ slides: slides100, selectedSlideIds: ['s-50'], selectedShapeIds: [] });
+      const pptCtx = await createHostAdapter('powerpoint', pptEnv).readContext();
+      assert.equal(pptCtx.hostContext.slideCount, 100);
+      assert.equal(pptCtx.hostContext.slidesOmitted, 40);
+
+      // Word occurrence=2 disambiguation
+      const wordEnv = createMockWordEnv({ paragraphs: ['Repeat term one.', 'Repeat term two.'] });
+      await createHostAdapter('word', wordEnv).applyEdit({
+        action: 'replace_match',
+        find: 'Repeat term',
+        content: 'Fixed term',
+        attrs: { occurrence: '2' },
+      });
+      assert.equal(wordEnv.state.paragraphs[0], 'Repeat term one.');
+      assert.equal(wordEnv.state.paragraphs[1], 'Fixed term two.');
+    },
+  },
+  {
+    id: 'E21',
+    suite: 'Harnesses',
+    name: 'Pi ($PI_CODING_AGENT_DIR + AGENTS.override.md), OpenCode, Gemini, Cursor discovery & resource sandbox',
+    async run() {
+      const { createSkillsLoader, readSkillResourceFile } = await import('../lib/skills.mjs');
+      const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'office-ai-eval-harnesses-'));
+      try {
+        const customPi = path.join(fakeHome, 'custom-pi');
+        fs.mkdirSync(path.join(customPi, 'skills', 'pi-memo', 'references'), { recursive: true });
+        fs.writeFileSync(path.join(customPi, 'AGENTS.md'), 'Base pi rule');
+        fs.writeFileSync(path.join(customPi, 'AGENTS.override.md'), 'Override pi rule');
+        fs.writeFileSync(path.join(customPi, 'skills', 'pi-memo', 'SKILL.md'), '---\nname: pi-memo\ndescription: Pi memo\n---\nBody');
+        fs.writeFileSync(path.join(customPi, 'skills', 'pi-memo', 'references', 'style.md'), 'Style rules');
+
+        fs.mkdirSync(path.join(fakeHome, '.config', 'opencode', 'skills', 'oc-excel'), { recursive: true });
+        fs.writeFileSync(path.join(fakeHome, '.config', 'opencode', 'AGENTS.md'), 'OpenCode rule');
+        fs.writeFileSync(path.join(fakeHome, '.config', 'opencode', 'skills', 'oc-excel', 'SKILL.md'), '---\nname: oc-excel\ndescription: OC excel\n---\nBody');
+
+        fs.mkdirSync(path.join(fakeHome, '.gemini'), { recursive: true });
+        fs.writeFileSync(path.join(fakeHome, '.gemini', 'GEMINI.md'), 'Gemini rule');
+        fs.mkdirSync(path.join(fakeHome, '.cursor', 'skills', 'cur-deck'), { recursive: true });
+        fs.writeFileSync(path.join(fakeHome, '.cursor', 'skills', 'cur-deck', 'SKILL.md'), '---\nname: cur-deck\ndescription: Cursor deck\n---\nBody');
+
+        const loader = createSkillsLoader({ homeDir: fakeHome, env: { PI_CODING_AGENT_DIR: customPi } });
+        const { agentsFiles, skills } = loader.load();
+        assert.ok(agentsFiles.some(f => f.content === 'Override pi rule'));
+        assert.ok(!agentsFiles.some(f => f.content === 'Base pi rule'));
+        assert.ok(agentsFiles.some(f => f.content === 'OpenCode rule'));
+        assert.ok(agentsFiles.some(f => f.content === 'Gemini rule'));
+        assert.deepEqual(skills.map(s => s.name).sort(), ['cur-deck', 'oc-excel', 'pi-memo']);
+
+        const piSkill = skills.find(s => s.name === 'pi-memo');
+        assert.equal(readSkillResourceFile(piSkill, 'references/style.md'), 'Style rules');
+        assert.throws(() => readSkillResourceFile(piSkill, '../../AGENTS.override.md'));
+      } finally {
+        fs.rmSync(fakeHome, { recursive: true, force: true });
+      }
+    },
+  },
+  {
+    id: 'E22',
+    suite: 'History',
+    name: 'Persistent local chat sessions CRUD, pruning, and rolling context compaction across 40 messages',
+    async run() {
+      const { createSessionStore, compactHistory } = await import('../lib/sessions.mjs');
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'office-ai-eval-hist-'));
+      try {
+        const store = createSessionStore({ configDir: tmp, maxSessions: 5 });
+        const longMsgs = Array.from({ length: 40 }, (_, i) => ({
+          role: i % 2 === 0 ? 'user' : 'assistant',
+          content: `Turn ${i + 1} discussion about Q3 metrics`,
+        }));
+        const saved = store.save({ host: 'excel', messages: longMsgs });
+        assert.equal(store.get(saved.id).messages.length, 40);
+
+        const compacted = compactHistory(longMsgs, { maxMessages: 16 });
+        assert.equal(compacted.compacted, true);
+        assert.equal(compacted.droppedCount, 24);
+        assert.equal(compacted.messages[0].role, 'system');
+        assert.match(compacted.messages[0].content, /24 earlier messages/);
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    },
+  },
+  {
+    id: 'E23',
+    suite: 'MCP & Tools',
+    name: 'Real stdio MCP server + built-in math tool + Ask/Auto permission gate for non-readOnly MCP tools',
+    async run() {
+      const { createMcpManager } = await import('../lib/mcp.mjs');
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'office-ai-eval-mcp-'));
+      const srvScript = path.join(tmp, 'srv.mjs');
+      fs.writeFileSync(
+        srvScript,
+        `
+        import readline from 'node:readline';
+        readline.createInterface({ input: process.stdin }).on('line', l => {
+          if (!l.trim()) return;
+          const m = JSON.parse(l);
+          if (m.method === 'initialize') process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} } } }) + '\\n');
+          else if (m.method === 'tools/list') process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: m.id, result: { tools: [
+            { name: 'read_kpi', description: 'Read KPI', annotations: { readOnlyHint: true } },
+            { name: 'post_slack', description: 'Post Slack message', annotations: { readOnlyHint: false } }
+          ] } }) + '\\n');
+          else if (m.method === 'tools/call') process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: m.id, result: { content: [{ type: 'text', text: 'OK:' + m.params.name }] } }) + '\\n');
+        });
+        `,
+      );
+      const mcpCfg = path.join(tmp, 'mcp.json');
+      fs.writeFileSync(mcpCfg, JSON.stringify({ mcpServers: { corp: { command: process.execPath, args: [srvScript] } } }));
+
+      const store = createConfigStore({ configDir: tmp, cwd: tmp, env: { DEEPSEEK_API_KEY: 'k' }, enableExternalHelper: false });
+      const mcpManager = createMcpManager({ homeDir: tmp, configDir: tmp, configPaths: [mcpCfg] });
+
+      const mockFetch = async (_u, opts) => {
+        const bodyObj = JSON.parse(opts.body);
+        const toolMsg = bodyObj.messages.find(m => m.role === 'tool');
+        const chunks = !toolMsg
+          ? ['data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"mcp__corp__post_slack","arguments":"{}"}}]}}]}\n', 'data: [DONE]\n']
+          : [`data: {"choices":[{"delta":{"content":"Tool said: ${toolMsg.content}"}}]}\n`, 'data: [DONE]\n'];
+        const body = (async function* () { for (const c of chunks) yield new TextEncoder().encode(c); })();
+        return { ok: true, status: 200, body, text: async () => '' };
+      };
+
+      const handler = createRequestHandler({ allowedHost: 'localhost:3443', store, mcpManager, fetchImpl: mockFetch, logger: null });
+      const server = http.createServer(handler);
+      await new Promise(r => server.listen(0, '127.0.0.1', r));
+      const { port } = server.address();
+      const postChat = payload => new Promise((resolve, reject) => {
+        const req = http.request({ hostname: '127.0.0.1', port, path: '/api/chat', method: 'POST', headers: { Host: 'localhost:3443', 'Content-Type': 'application/json' } }, res => {
+          let d = '';
+          res.on('data', c => { d += c; });
+          res.on('end', () => resolve(d));
+        });
+        req.on('error', reject);
+        req.write(JSON.stringify(payload));
+        req.end();
+      });
+
+      try {
+        // In Ask mode (allowExternalTools: false), write MCP tool is blocked safely
+        const blocked = await postChat({ host: 'word', messages: [{ role: 'user', content: 'Post to slack' }], allowExternalTools: false });
+        assert.match(blocked, /Permission required/);
+
+        // In Auto mode (allowExternalTools: true), write MCP tool executes cleanly
+        const allowed = await postChat({ host: 'word', messages: [{ role: 'user', content: 'Post to slack' }], allowExternalTools: true });
+        assert.match(allowed, /OK:post_slack/);
+      } finally {
+        mcpManager.closeAll();
+        await new Promise(r => server.close(r));
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    },
+  },
+  {
+    id: 'E24',
+    suite: 'Resilience',
+    name: 'Explicit truncation notices, client-disconnect upstream abort, and split UTF-8 CJK handling',
+    async run() {
+      const longDoc = 'A'.repeat(45000);
+      const ctx = buildContextPrompt({ host: 'word', documentText: longDoc, selection: '' });
+      assert.match(ctx, /Note: truncated — showing first 40,000 of 45,000 characters/);
+
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'office-ai-eval-abort-'));
+      const store = createConfigStore({ configDir: tmp, cwd: tmp, env: { DEEPSEEK_API_KEY: 'k' }, enableExternalHelper: false });
+      const { createMcpManager } = await import('../lib/mcp.mjs');
+      const mcpManager = createMcpManager({ homeDir: tmp, configDir: tmp, configPaths: [] });
+      let aborted = false;
+
+      const mockFetch = async (_u, opts) => {
+        const body = (async function* () {
+          yield new TextEncoder().encode('data: {"choices":[{"delta":{"content":"Hi"}}]}\n');
+          await new Promise(resolve => {
+            const t = setTimeout(resolve, 4000);
+            opts.signal?.addEventListener('abort', () => { clearTimeout(t); aborted = true; resolve(); });
+          });
+        })();
+        return { ok: true, status: 200, body, text: async () => '' };
+      };
+      const handler = createRequestHandler({ allowedHost: 'localhost:3443', store, mcpManager, fetchImpl: mockFetch, logger: null });
+      const server = http.createServer(handler);
+      await new Promise(r => server.listen(0, '127.0.0.1', r));
+      const { port } = server.address();
+      try {
+        await new Promise(resolve => {
+          const req = http.request({ hostname: '127.0.0.1', port, path: '/api/chat', method: 'POST', headers: { Host: 'localhost:3443', 'Content-Type': 'application/json' } }, res => {
+            res.once('data', () => { req.destroy(); setTimeout(resolve, 50); });
+          });
+          req.on('error', () => {});
+          req.write(JSON.stringify({ host: 'word', messages: [{ role: 'user', content: 'Hello' }] }));
+          req.end();
+        });
+        assert.equal(aborted, true);
+      } finally {
+        mcpManager.closeAll();
+        await new Promise(r => server.close(r));
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    },
+  },
 ];
 
 async function main() {

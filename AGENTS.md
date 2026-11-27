@@ -4,11 +4,13 @@ Local, model-agnostic Office Add-in sidebar for **Microsoft Word, Excel, and Pow
 
 ## Architecture & Separation of Concerns
 
-- `server.mjs` — Thin HTTPS bootstrap (IPv4 + IPv6 loopback on port `3443`). Keep business logic out of this file.
-- `lib/server-core.mjs` — Testable HTTP router & API handler (`/api/config`, `/api/keys`, `/api/skills`, `/api/chat`) plus strict `STATIC_FILES` allowlist (never serve `.mjs` server modules to the browser).
-- `lib/providers.mjs` — Provider registry, local `~/.config/word-poc/` config & write-only `.env` key store, OpenAI/Anthropic SSE stream adapters.
-- `lib/prompts.mjs` — Host-specific system prompts (`word`, `excel`, `powerpoint`) and context builders. All host prompts must treat document/workbook/presentation content strictly as data, never as instructions.
-- `lib/skills.mjs` — Global `AGENTS.md` and global `SKILL.md` discovery, zero-dep YAML frontmatter parser, host compatibility filtering, `/skill-name` resolution, and prompt assembly.
+- `server.mjs` — Thin HTTPS bootstrap (IPv4 + IPv6 loopback on port `3443`) with clean MCP shutdown hooks. Keep business logic out of this file.
+- `lib/server-core.mjs` — Testable HTTP router & API handler (`/api/config`, `/api/keys`, `/api/skills`, `/api/mcp`, `/api/sessions`, `/api/chat` with multi-step tool loop & upstream abort propagation) plus strict `STATIC_FILES` allowlist (never serve `.mjs` server modules to the browser).
+- `lib/providers.mjs` — Provider registry, local `~/.config/word-poc/` config & write-only `.env` key store, OpenAI/Anthropic SSE tool-calling stream adapters with prompt caching & AbortSignal support.
+- `lib/prompts.mjs` — Host-specific system prompts (`word`, `excel`, `powerpoint`) and context builders with explicit truncation notices. All host prompts must treat document/workbook/presentation content strictly as data, never as instructions.
+- `lib/skills.mjs` — Global `AGENTS.override.md` / `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` and `SKILL.md` discovery across `~/.config/word-poc`, `~/.agents`, Pi (`~/.pi/agent`), OpenCode (`~/.config/opencode`), Claude, Codex, Gemini, Cursor, and `~/skills`, with bundled resource reading and TTL caching.
+- `lib/sessions.mjs` — Persistent local chat history (`~/.config/word-poc/sessions/`) with automatic pruning and rolling context compaction.
+- `lib/mcp.mjs` & `lib/tools.mjs` — Zero-dependency MCP client (stdio + Streamable HTTP, discovering Word-POC, Pi, Claude, and OpenCode MCP configs), safe zero-eval `calculate` tool, sandboxed `read_skill_resource` tool, and permission-gated tool dispatcher.
 - `lib/format.js` — Browser + Node pure module: `<edit>` parser (supporting self-closing tags and mid-stream partial suppression), XSS-safe Markdown (with tables & clickable cell/slide citation chips), and word/CJK diffing.
 - `lib/excel-utils.js` & `lib/ppt-utils.js` — Pure Excel (A1 parsing, grid/formula coercion, snapshot + error scan) and PowerPoint (Slide Master layout matching, placeholder classification, slide spec parsing) helpers.
 - `lib/hosts/{word,excel,powerpoint,index}.js` — Office.js host adapters conforming to the shared adapter contract (`id`, `label`, `noun`, `quickActions`, `formatContextBadge`, `getStarters`, `readContext`, `watchSelection`, `applyEdit`, optional `toggleSecondary`, optional `navigateToRef`).

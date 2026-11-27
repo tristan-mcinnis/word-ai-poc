@@ -159,3 +159,54 @@ test('resolveActiveSkills & buildSkillsPromptSection handle /skill-name invocati
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+test('discovers Pi, OpenCode, Gemini, and Cursor instructions/skills, respects AGENTS.override.md, and caches with TTL', () => {
+  const home = makeTempHome();
+  try {
+    // Pi with AGENTS.override.md superseding AGENTS.md in the same directory
+    fs.mkdirSync(path.join(home, '.pi', 'agent', 'skills', 'pi-writer', 'references'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.pi', 'agent', 'AGENTS.md'), 'Old pi rule.');
+    fs.writeFileSync(path.join(home, '.pi', 'agent', 'AGENTS.override.md'), 'Override pi rule wins.');
+    fs.writeFileSync(
+      path.join(home, '.pi', 'agent', 'skills', 'pi-writer', 'SKILL.md'),
+      '---\nname: pi-writer\ndescription: Pi writing skill\n---\nWrite tightly.',
+    );
+    fs.writeFileSync(path.join(home, '.pi', 'agent', 'skills', 'pi-writer', 'references', 'tone.md'), 'Crisp tone guide.');
+
+    // OpenCode, Gemini, and Cursor
+    fs.mkdirSync(path.join(home, '.config', 'opencode', 'skills', 'oc-slides'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.config', 'opencode', 'AGENTS.md'), 'OpenCode global rule.');
+    fs.writeFileSync(
+      path.join(home, '.config', 'opencode', 'skills', 'oc-slides', 'SKILL.md'),
+      '---\nname: oc-slides\ndescription: OpenCode slide skill\n---\nKeep slides clean.',
+    );
+    fs.mkdirSync(path.join(home, '.gemini'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.gemini', 'GEMINI.md'), 'Gemini global rule.');
+    fs.mkdirSync(path.join(home, '.cursor', 'skills', 'cursor-polish'), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, '.cursor', 'skills', 'cursor-polish', 'SKILL.md'),
+      '---\nname: cursor-polish\ndescription: Cursor polish skill\n---\nPolish grammar.',
+    );
+
+    const loader = createSkillsLoader({ homeDir: home, env: {}, cacheTtlMs: 60000 });
+    const first = loader.load();
+
+    // AGENTS.override.md replaced AGENTS.md in ~/.pi/agent
+    const piPaths = first.agentsFiles.map(f => f.displayPath);
+    assert.ok(piPaths.includes('~/.pi/agent/AGENTS.override.md'));
+    assert.ok(!piPaths.includes('~/.pi/agent/AGENTS.md'));
+    assert.ok(piPaths.includes('~/.config/opencode/AGENTS.md'));
+    assert.ok(piPaths.includes('~/.gemini/GEMINI.md'));
+
+    assert.equal(first.skills.length, 3);
+    const piSkill = first.skills.find(s => s.name === 'pi-writer');
+    assert.deepEqual(piSkill.resources, ['references/tone.md']);
+
+    // Cache hit returns identical object until force: true
+    assert.strictEqual(loader.load(), first);
+    const refreshed = loader.load({ force: true });
+    assert.notStrictEqual(refreshed, first);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

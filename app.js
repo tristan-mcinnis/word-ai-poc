@@ -14,12 +14,15 @@ import { detectOfficeHost, createHostAdapter } from './lib/hosts/index.js';
 
 const $ = id => document.getElementById(id);
 const CONTEXT_MODES = ['auto', 'selection', 'document'];
+const MAX_CLIENT_MESSAGES = 60;
+const MAX_DOM_TURNS = 60;
 
 const state = {
   inOffice: false,
   hostId: 'word',
   adapter: createHostAdapter('word'),
-  messages: [],          // { role, content } sent to the model
+  sessionId: null,       // current saved session id (~/.config/word-poc/sessions/)
+  messages: [],          // { role, content } sent to the model (bounded to MAX_CLIENT_MESSAGES)
   selectionText: '',
   documentText: '',
   comments: [],
@@ -38,6 +41,7 @@ const state = {
   userScrolledUp: false,
   keyInfo: null,
   skillsInfo: null,
+  mcpInfo: null,
   pinnedSkills: [],
   lastPrompt: '',
 };
@@ -354,7 +358,17 @@ function addUserTurn(text, attachedSelection, hostContextSnapshot) {
   bubble.textContent = text;
   wrap.appendChild(bubble);
   transcriptEl.appendChild(wrap);
+  trimClientMemory();
   scrollToBottom(true);
+}
+
+function trimClientMemory() {
+  if (state.messages.length > MAX_CLIENT_MESSAGES) {
+    state.messages = state.messages.slice(-MAX_CLIENT_MESSAGES);
+  }
+  while (transcriptEl.children.length > MAX_DOM_TURNS) {
+    transcriptEl.removeChild(transcriptEl.firstElementChild);
+  }
 }
 
 function createAssistantTurn() {
@@ -368,29 +382,81 @@ function createAssistantTurn() {
   meta.hidden = true;
   wrap.append(body, meta);
   transcriptEl.appendChild(wrap);
+  trimClientMemory();
   scrollToBottom(true);
-  return { wrap, body, meta, diffStates: new Map(), appliedSet: new Set() };
+  return { wrap, body, meta, diffStates: new Map(), appliedSet: new Set(), toolEvents: [] };
 }
 
-function lookupShapeBaseline(edit, hostContextSnapshot) {
-  const slides = hostContextSnapshot?.slides;
-  const attrs = edit.attrs || {};
-  if (Array.isArray(slides) && slides.length) {
-    const slideNum = parseSlideRef(attrs.slide) || hostContextSnapshot.currentSlideIndex || 1;
-    const slide = slides.find(s => s.index === slideNum);
-    if (slide && Array.isArray(slide.shapes)) {
-      if (attrs.shape) {
+/**
+ * Extract only the minimal text baselines needed for PowerPoint update_shape diffs
+ * so finished turns do not pin large slide/layout objects in WKWebView RAM.
+ */
+function buildMinimalBaselines(parts, hostContextSnapshot) {
+  const map = new Map();
+  if (!hostContextSnapshot) return { selectedShapeText: '', byKey: map };
+  const slides = hostContextSnapshot.slides;
+  for (const part of parts || []) {
+    if (part.kind !== 'edit' || part.action !== 'update_shape') continue;
+    const attrs = part.attrs || {};
+    const key = `${attrs.slide || ''}|${attrs.shape || ''}`;
+    if (map.has(key)) continue;
+    let foundText = '';
+    if (Array.isArray(slides) && slides.length) {
+      const slideNum = parseSlideRef(attrs.slide) || hostContextSnapshot.currentSlideIndex || 1;
+      const slide = slides.find(s => s.index === slideNum);
+      if (slide && Array.isArray(slide.shapes) && attrs.shape) {
         const q = attrs.shape.trim().toLowerCase();
         const found = slide.shapes.find(sh =>
           String(sh.id).toLowerCase() === q ||
           String(sh.name || '').trim().toLowerCase() === q ||
           String(sh.name || '').toLowerCase().includes(q),
         );
-        if (found?.text) return found.text;
+        if (found?.text) foundText = found.text;
       }
     }
+    map.set(key, foundText || hostContextSnapshot.selectedShapeText || '');
   }
-  return hostContextSnapshot?.selectedShapeText || '';
+  return { selectedShapeText: (hostContextSnapshot.selectedShapeText || '').slice(0, 4000), byKey: map };
+}
+
+function lookupShapeBaseline(edit, baselines) {
+  if (!baselines) return '';
+  const attrs = edit.attrs || {};
+  const key = `${attrs.slide || ''}|${attrs.shape || ''}`;
+  if (baselines.byKey && baselines.byKey.has(key)) return baselines.byKey.get(key);
+  return baselines.selectedShapeText || '';
+}
+
+function buildToolCard(ev) {
+  const details = document.createElement('details');
+  details.className = 'tool-card' + (ev.done && !ev.ok ? ' err' : '');
+  const summary = document.createElement('summary');
+  const left = document.createElement('span');
+  left.innerHTML = `<span class="tool-card-name"></span>`;
+  left.querySelector('.tool-card-name').textContent = ev.name;
+  if (ev.server && ev.server !== 'built-in') {
+    const srv = document.createElement('span');
+    srv.textContent = ` · ${ev.server}`;
+    left.appendChild(srv);
+  }
+  const status = document.createElement('span');
+  status.className = 'tool-card-status';
+  status.textContent = ev.done ? (ev.ok ? 'Done' : 'Blocked / Error') : 'Running…';
+  summary.append(left, status);
+  details.appendChild(summary);
+
+  const body = document.createElement('div');
+  body.className = 'tool-card-body';
+  const lines = [];
+  if (ev.args && Object.keys(ev.args).length) {
+    lines.push(`Args: ${JSON.stringify(ev.args)}`);
+  }
+  if (ev.preview) {
+    lines.push(`Result: ${ev.preview}`);
+  }
+  body.textContent = lines.join('\n') || 'Executing…';
+  details.appendChild(body);
+  return details;
 }
 
 function renderGridPreviewHtml(grid) {
@@ -639,13 +705,20 @@ function buildEditCard(edit, index, turn, expectedSelection, hostContextSnapshot
   return card;
 }
 
-function renderAssistantTurn(turn, text, expectedSelection, hostContextSnapshot, isFinal = false, metaLabel = '', canRetry = false) {
+function renderAssistantTurn(turn, text, expectedSelection, baselines, isFinal = false, metaLabel = '', canRetry = false) {
   const parts = parseAssistantReply(text);
   turn.body.innerHTML = '';
 
-  if (!parts.length) {
+  const hasTools = Array.isArray(turn.toolEvents) && turn.toolEvents.length > 0;
+  if (!parts.length && !hasTools) {
     turn.body.innerHTML = `<div class="thinking"><span class="thinking-dots"><span></span><span></span><span></span></span><span>Thinking…</span></div>`;
     return;
+  }
+
+  if (hasTools) {
+    for (const ev of turn.toolEvents) {
+      turn.body.appendChild(buildToolCard(ev));
+    }
   }
 
   const edits = [];
@@ -660,7 +733,7 @@ function renderAssistantTurn(turn, text, expectedSelection, hostContextSnapshot,
     } else if (part.kind === 'edit') {
       const idx = editIndex++;
       edits.push({ edit: part, idx });
-      turn.body.appendChild(buildEditCard(part, idx, turn, expectedSelection, hostContextSnapshot));
+      turn.body.appendChild(buildEditCard(part, idx, turn, expectedSelection, baselines));
     }
   }
 
@@ -687,7 +760,7 @@ function renderAssistantTurn(turn, text, expectedSelection, hostContextSnapshot,
             failedCount++;
           }
         }
-        renderAssistantTurn(turn, text, expectedSelection, hostContextSnapshot, true, metaLabel);
+        renderAssistantTurn(turn, text, expectedSelection, baselines, true, metaLabel);
         if (appliedCount > 0 && failedCount === 0) {
           showToast(`Applied ${appliedCount} edit${appliedCount === 1 ? '' : 's'} · Cmd+Z to undo`);
         } else if (appliedCount > 0 && failedCount > 0) {
@@ -878,6 +951,8 @@ document.addEventListener('keydown', e => {
     closeKeysPanel();
   } else if (e.key === 'Escape' && !$('skills-panel').hidden) {
     closeSkillsPanel();
+  } else if (e.key === 'Escape' && !$('history-panel').hidden) {
+    closeHistoryPanel();
   } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
     e.preventDefault();
     inputEl.focus();
@@ -933,14 +1008,87 @@ async function sendTurn(userText) {
 
   const usedSelection = state.selectionText;
   const usedDoc = state.documentText;
-  const usedHostContext = state.hostContext;
+  let usedHostContext = state.hostContext;
 
   addUserTurn(text, usedSelection, usedHostContext);
   state.messages.push({ role: 'user', content: text });
+  trimClientMemory();
 
   const turn = createAssistantTurn();
   let reply = '';
   let metaLabel = '';
+  let rafId = null;
+  let streamBaselines = buildMinimalBaselines([], usedHostContext);
+
+  const scheduleStreamRender = () => {
+    if (rafId !== null) return;
+    const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (fn => setTimeout(fn, 16));
+    rafId = raf(() => {
+      rafId = null;
+      renderAssistantTurn(turn, reply, usedSelection, streamBaselines, false);
+    });
+  };
+  const cancelStreamRender = () => {
+    if (rafId !== null) {
+      if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rafId);
+      else clearTimeout(rafId);
+      rafId = null;
+    }
+  };
+
+  const processFrame = frame => {
+    if (!frame.startsWith('data:')) return;
+    let payload;
+    try {
+      payload = JSON.parse(frame.slice(5).trim());
+    } catch {
+      return;
+    }
+    if (payload.delta) {
+      reply += payload.delta;
+      scheduleStreamRender();
+    }
+    if (payload.toolStart) {
+      turn.toolEvents.push({
+        id: payload.toolStart.id,
+        name: payload.toolStart.name,
+        server: payload.toolStart.server,
+        args: payload.toolStart.args,
+        done: false,
+        ok: true,
+        preview: '',
+      });
+      scheduleStreamRender();
+    }
+    if (payload.toolResult) {
+      const existing = turn.toolEvents.find(t => t.id === payload.toolResult.id);
+      if (existing) {
+        existing.done = true;
+        existing.ok = payload.toolResult.ok;
+        existing.preview = payload.toolResult.preview || '';
+      } else {
+        turn.toolEvents.push({
+          id: payload.toolResult.id,
+          name: payload.toolResult.name,
+          server: payload.toolResult.server,
+          done: true,
+          ok: payload.toolResult.ok,
+          preview: payload.toolResult.preview || '',
+        });
+      }
+      scheduleStreamRender();
+    }
+    if (payload.error) throw new Error(payload.error);
+    if (payload.done) {
+      const baseMeta = payload.providerLabel ? `${payload.providerLabel} · ${payload.model}` : payload.model;
+      const skillTag = Array.isArray(payload.activeSkills) && payload.activeSkills.length
+        ? ` · ${payload.activeSkills.map(s => `/${s}`).join(' ')}`
+        : '';
+      const compactTag = payload.compacted ? ' · compacted' : '';
+      metaLabel = `${baseMeta}${skillTag}${compactTag}`;
+    }
+  };
+
   const controller = new AbortController();
   state.controller = controller;
   state.userScrolledUp = false;
@@ -959,6 +1107,7 @@ async function sendTurn(userText) {
         comments: state.comments,
         hostContext: usedHostContext,
         activeSkills: pinnedNow,
+        allowExternalTools: state.autoApply,
       }),
       signal: controller.signal,
     });
@@ -983,49 +1132,56 @@ async function sendTurn(userText) {
       while ((i = buf.indexOf('\n\n')) >= 0) {
         const frame = buf.slice(0, i);
         buf = buf.slice(i + 2);
-        if (!frame.startsWith('data:')) continue;
-        const payload = JSON.parse(frame.slice(5).trim());
-        if (payload.delta) {
-          reply += payload.delta;
-          renderAssistantTurn(turn, reply, usedSelection, usedHostContext, false);
-        }
-        if (payload.error) throw new Error(payload.error);
-        if (payload.done) {
-          const baseMeta = payload.providerLabel ? `${payload.providerLabel} · ${payload.model}` : payload.model;
-          const skillTag = Array.isArray(payload.activeSkills) && payload.activeSkills.length
-            ? ` · ${payload.activeSkills.map(s => `/${s}`).join(' ')}`
-            : '';
-          metaLabel = `${baseMeta}${skillTag}`;
-        }
+        processFrame(frame);
+      }
+    }
+    buf += decoder.decode();
+    if (buf.trim()) {
+      for (const frame of buf.split('\n\n')) {
+        if (frame.trim()) processFrame(frame.trim());
       }
     }
 
+    cancelStreamRender();
     if (!reply.trim()) throw new Error('The model returned nothing.');
+
+    // Extract only minimal diff baselines and release the full hostContext snapshot for GC
+    const finalParts = parseAssistantReply(reply);
+    const minimalBaselines = buildMinimalBaselines(finalParts, usedHostContext);
+    usedHostContext = null;
+
     state.messages.push({ role: 'assistant', content: reply });
-    renderAssistantTurn(turn, reply, usedSelection, usedHostContext, true, metaLabel);
+    trimClientMemory();
+    renderAssistantTurn(turn, reply, usedSelection, minimalBaselines, true, metaLabel);
+    saveCurrentSession();
 
     // In Auto-apply mode, apply all non-destructive proposed edits automatically once finished
     if (state.autoApply && state.inOffice) {
-      const finalParts = parseAssistantReply(reply).filter(p => p.kind === 'edit');
+      const editParts = finalParts.filter(p => p.kind === 'edit');
       let appliedCount = 0;
-      for (let idx = 0; idx < finalParts.length; idx++) {
-        if (isDestructiveAction(finalParts[idx].action)) continue;
-        const ok = await applyEdit(finalParts[idx], usedSelection);
+      for (let idx = 0; idx < editParts.length; idx++) {
+        if (isDestructiveAction(editParts[idx].action)) continue;
+        const ok = await applyEdit(editParts[idx], usedSelection);
         if (ok) {
           turn.appliedSet.add(idx);
           appliedCount++;
         }
       }
       if (appliedCount > 0) {
-        renderAssistantTurn(turn, reply, usedSelection, usedHostContext, true, metaLabel);
+        renderAssistantTurn(turn, reply, usedSelection, minimalBaselines, true, metaLabel);
       }
     }
   } catch (e) {
+    cancelStreamRender();
+    const minimalBaselines = buildMinimalBaselines(parseAssistantReply(reply), usedHostContext);
+    usedHostContext = null;
     if (e.name === 'AbortError') {
       showToast('Stopped.', false, 1800);
       if (reply.trim()) {
         state.messages.push({ role: 'assistant', content: reply });
-        renderAssistantTurn(turn, reply, usedSelection, usedHostContext, true, 'Stopped');
+        trimClientMemory();
+        renderAssistantTurn(turn, reply, usedSelection, minimalBaselines, true, 'Stopped');
+        saveCurrentSession();
       } else {
         turn.wrap.remove();
         state.messages.pop();
@@ -1034,7 +1190,7 @@ async function sendTurn(userText) {
     } else {
       showToast(e.message || String(e), true);
       if (reply.trim()) {
-        renderAssistantTurn(turn, reply, usedSelection, usedHostContext, true, 'Error', true);
+        renderAssistantTurn(turn, reply, usedSelection, minimalBaselines, true, 'Error', true);
       } else {
         turn.wrap.remove();
         state.messages.pop();
@@ -1042,6 +1198,7 @@ async function sendTurn(userText) {
       }
     }
   } finally {
+    cancelStreamRender();
     state.controller = null;
     updateSendState();
     inputEl.focus();
@@ -1052,6 +1209,7 @@ $('send').onclick = () => sendTurn(inputEl.value);
 $('stop').onclick = () => { if (state.controller) state.controller.abort(); };
 $('new').onclick = () => {
   if (state.controller) state.controller.abort();
+  state.sessionId = null;
   state.messages = [];
   renderEmptyState();
   showToast('Started a new conversation.', false, 1600);
@@ -1111,6 +1269,7 @@ function renderKeysPanel(data, focusProvider = null) {
 async function openKeysPanel(focusProvider = null) {
   closeActionsMenu();
   closeSkillsPanel();
+  closeHistoryPanel();
   try {
     const res = await fetch('/api/keys');
     const data = await res.json();
@@ -1313,17 +1472,115 @@ function renderSkillsPanel(data) {
     skillsSec.appendChild(empty);
   }
 
-  const dirs = (data.searchPaths?.skillsDirs || []).slice(0, 4).join(', ');
-  $('skills-paths-note').textContent = `Scans AGENTS.md (~/.agents, ~/.claude, ~/.codex, ~/.config/word-poc) and skills (${dirs}). Invoke any skill with /skill-name.`;
+  const dirs = (data.searchPaths?.skillsDirs || []).slice(0, 5).join(', ');
+  $('skills-paths-note').textContent = `Scans AGENTS.md / CLAUDE.md / GEMINI.md (~/.agents, ~/.pi/agent, ~/.config/opencode, ~/.claude, ~/.codex, ~/.gemini) and skills (${dirs}). Invoke any skill with /skill-name.`;
+}
+
+function renderMcpSection(data) {
+  state.mcpInfo = data;
+  const sec = $('mcp-section');
+  sec.innerHTML = '';
+
+  const title = document.createElement('div');
+  title.className = 'skills-section-title';
+  title.innerHTML = `<span>Tools &amp; MCP Servers</span>`;
+  const toggleTools = document.createElement('button');
+  toggleTools.type = 'button';
+  toggleTools.className = 'skill-mini-btn' + (data.toolsEnabled ? ' active' : '');
+  toggleTools.textContent = data.toolsEnabled ? 'Active' : 'Off';
+  toggleTools.onclick = () => updateMcpSettings({ toolsEnabled: !data.toolsEnabled });
+  title.appendChild(toggleTools);
+  sec.appendChild(title);
+
+  // Built-in safe tools summary
+  const builtins = data.builtinTools || [];
+  if (builtins.length) {
+    const row = document.createElement('div');
+    row.className = 'skill-row' + (data.toolsEnabled ? '' : ' disabled');
+    row.innerHTML = `<div class="skill-row-main"><div class="skill-row-name">Built-in tools</div><div class="skill-row-desc"></div></div>`;
+    row.querySelector('.skill-row-desc').textContent = builtins.map(t => t.name).join(', ');
+    sec.appendChild(row);
+  }
+
+  const servers = data.servers || [];
+  if (servers.length) {
+    for (const srv of servers) {
+      const row = document.createElement('div');
+      row.className = 'skill-row' + (srv.enabled && data.toolsEnabled ? '' : ' disabled');
+      row.innerHTML = `<div class="skill-row-main"><div class="skill-row-name"></div><div class="skill-row-desc"></div><div class="skill-row-source"></div></div><div class="skill-row-actions"></div>`;
+      row.querySelector('.skill-row-name').textContent = srv.name;
+      const statusText = srv.connected
+        ? `Connected · ${srv.toolCount} tool${srv.toolCount === 1 ? '' : 's'}`
+        : srv.error
+          ? `Error: ${srv.error}`
+          : `${srv.transport} · ${srv.target}`;
+      row.querySelector('.skill-row-desc').textContent = statusText;
+      row.querySelector('.skill-row-source').textContent = srv.source;
+
+      const actions = row.querySelector('.skill-row-actions');
+      const testBtn = document.createElement('button');
+      testBtn.type = 'button';
+      testBtn.className = 'skill-mini-btn';
+      testBtn.textContent = srv.connected ? 'Refresh' : 'Test';
+      testBtn.onclick = async () => {
+        testBtn.disabled = true;
+        testBtn.textContent = '…';
+        await updateMcpSettings({ testServer: srv.name });
+      };
+      actions.appendChild(testBtn);
+
+      const enBtn = document.createElement('button');
+      enBtn.type = 'button';
+      enBtn.className = 'skill-mini-btn';
+      enBtn.textContent = srv.enabled ? 'Disable' : 'Enable';
+      enBtn.onclick = () => updateMcpSettings({ toggleServer: srv.name, enabled: !srv.enabled });
+      actions.appendChild(enBtn);
+
+      sec.appendChild(row);
+    }
+  } else {
+    const empty = document.createElement('div');
+    empty.className = 'skills-empty';
+    empty.textContent = `No MCP servers found in ${data.localConfigPath || '~/.config/word-poc/mcp.json'}, Pi, Claude, or OpenCode configs.`;
+    sec.appendChild(empty);
+  }
+}
+
+async function loadMcp() {
+  try {
+    const res = await fetch('/api/mcp');
+    if (!res.ok) return;
+    renderMcpSection(await res.json());
+  } catch {}
+}
+
+async function updateMcpSettings(patch) {
+  try {
+    const res = await fetch('/api/mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not update MCP settings');
+    renderMcpSection(data);
+    if (patch.testServer) {
+      showToast(data.ok ? `Connected to MCP server "${patch.testServer}".` : (data.error || 'Connection failed.'), !data.ok, 2400);
+    }
+  } catch (err) {
+    showToast(err.message || String(err), true);
+  }
 }
 
 async function loadSkills(showFeedback = false) {
   try {
-    const res = await fetch(`/api/skills?host=${encodeURIComponent(state.hostId)}`);
+    const url = `/api/skills?host=${encodeURIComponent(state.hostId)}${showFeedback ? '&refresh=1' : ''}`;
+    const res = await fetch(url);
     if (!res.ok) return;
     const data = await res.json();
     renderSkillsPanel(data);
     if (showFeedback) {
+      await loadMcp();
       showToast(`Loaded ${data.agentsFiles.length} AGENTS.md & ${data.skills.length} global skill${data.skills.length === 1 ? '' : 's'}.`, false, 2000);
     }
   } catch {
@@ -1349,7 +1606,8 @@ async function updateSkillSettings(patch) {
 async function openSkillsPanel() {
   closeActionsMenu();
   closeKeysPanel();
-  await loadSkills();
+  closeHistoryPanel();
+  await Promise.all([loadSkills(), loadMcp()]);
   $('skills-panel').hidden = false;
 }
 
@@ -1364,6 +1622,139 @@ $('skills-btn').onclick = () => {
 $('skills-close').onclick = closeSkillsPanel;
 $('skills-refresh').onclick = () => loadSkills(true);
 
+/* ---------- Persistent Chat History panel ---------- */
+
+function formatRelativeTime(ts) {
+  if (!ts) return '';
+  const diffSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (diffSec < 60) return 'just now';
+  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+  return `${Math.floor(diffSec / 86400)}d ago`;
+}
+
+async function saveCurrentSession() {
+  if (!state.messages.length) return;
+  try {
+    const res = await fetch('/api/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: state.sessionId,
+        host: state.hostId,
+        messages: state.messages,
+      }),
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.session?.id) state.sessionId = data.session.id;
+  } catch {}
+}
+
+async function restoreSession(id) {
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}`);
+    if (!res.ok) throw new Error('Could not load saved session.');
+    const data = await res.json();
+    const sess = data.session;
+    if (!sess) return;
+    if (state.controller) state.controller.abort();
+    state.sessionId = sess.id;
+    state.messages = [];
+    transcriptEl.innerHTML = '';
+
+    for (const msg of sess.messages || []) {
+      if (msg.role === 'user') {
+        addUserTurn(msg.content, '', {});
+        state.messages.push({ role: 'user', content: msg.content });
+      } else if (msg.role === 'assistant') {
+        const turn = createAssistantTurn();
+        state.messages.push({ role: 'assistant', content: msg.content });
+        renderAssistantTurn(turn, msg.content, '', null, true, 'Saved');
+      }
+    }
+    if (state.messages.length === 0) renderEmptyState();
+    closeHistoryPanel();
+    scrollToBottom(true);
+    showToast(`Restored "${sess.title}"`, false, 1800);
+  } catch (err) {
+    showToast(err.message || String(err), true);
+  }
+}
+
+async function deleteSession(id) {
+  try {
+    await fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (state.sessionId === id) state.sessionId = null;
+    await loadSessions();
+  } catch {}
+}
+
+async function loadSessions() {
+  const list = $('history-list');
+  list.innerHTML = '';
+  try {
+    const res = await fetch(`/api/sessions?host=${encodeURIComponent(state.hostId)}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const sessions = data.sessions || [];
+    if (!sessions.length) {
+      const empty = document.createElement('div');
+      empty.className = 'skills-empty';
+      empty.textContent = `No saved ${state.adapter.label} conversations yet.`;
+      list.appendChild(empty);
+      return;
+    }
+
+    for (const s of sessions) {
+      const item = document.createElement('div');
+      item.className = 'history-item' + (s.id === state.sessionId ? ' current' : '');
+
+      const openBtn = document.createElement('button');
+      openBtn.type = 'button';
+      openBtn.className = 'history-open-btn';
+      openBtn.innerHTML = `<div class="history-title"></div><div class="history-meta"></div>`;
+      openBtn.querySelector('.history-title').textContent = s.title;
+      openBtn.querySelector('.history-meta').textContent = `${s.messageCount} msgs · ${formatRelativeTime(s.updatedAt)}`;
+      openBtn.onclick = () => restoreSession(s.id);
+
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'micro-btn';
+      delBtn.title = 'Delete conversation';
+      delBtn.setAttribute('aria-label', 'Delete conversation');
+      delBtn.innerHTML = '&times;';
+      delBtn.onclick = () => deleteSession(s.id);
+
+      item.append(openBtn, delBtn);
+      list.appendChild(item);
+    }
+  } catch {
+    const empty = document.createElement('div');
+    empty.className = 'skills-empty';
+    empty.textContent = 'Could not load saved history.';
+    list.appendChild(empty);
+  }
+}
+
+async function openHistoryPanel() {
+  closeActionsMenu();
+  closeKeysPanel();
+  closeSkillsPanel();
+  await loadSessions();
+  $('history-panel').hidden = false;
+}
+
+function closeHistoryPanel() {
+  $('history-panel').hidden = true;
+}
+
+$('history-btn').onclick = () => {
+  if ($('history-panel').hidden) openHistoryPanel();
+  else closeHistoryPanel();
+};
+$('history-close').onclick = closeHistoryPanel;
+
 /* ---------- Boot ---------- */
 
 function boot(detectedHost) {
@@ -1373,6 +1764,7 @@ function boot(detectedHost) {
 
   loadProviders();
   loadSkills();
+  loadMcp();
   updateHostChrome();
   renderEmptyState();
   updateSendState();

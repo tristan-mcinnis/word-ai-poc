@@ -25,10 +25,11 @@ Chat naturally about your open document, workbook, or presentation, inspect diff
 - **Structured PowerPoint edits with slide & diff previews**: Update shape text with word-level diff (`update_shape`), targeted text search-and-replace across a slide or deck (`replace_slide_text`), insert on-brand slides using matched template layouts (`add_slide`), add text boxes (`add_textbox`), insert native tables (`add_table`), and delete slides (`delete_slide`, always confirmation-gated).
 - **Slash workflows (`/`)**: `/review-deck`, `/tighten-slide`, `/rewrite-title`, `/add-slide`, `/outline-deck`, `/speaker-notes`, `/add-table`, `/polish-copy`, `/zh`, `/en`.
 
-### Shared UX, Global Skills & Privacy
-- **Global `AGENTS.md` & Global Skills (`SKILL.md`)**: Automatically discovers your global agent instructions (`~/.config/word-poc/AGENTS.md`, `~/.agents/AGENTS.md`, `~/.codex/AGENTS.md`, `~/.claude/AGENTS.md`, `~/.claude/CLAUDE.md`, `~/AGENTS.md`) and global skill folders (`~/.config/word-poc/skills`, `~/.agents/skills`, `~/.claude/skills`, `~/.codex/skills`, `~/skills`). Manage and toggle them live via the **Skills** button in the header, pin skills in the composer, or invoke any skill directly with `/skill-name` (supports optional `hosts: [word, excel, powerpoint]` frontmatter filtering and `OFFICE_AI_AGENTS_PATH` / `OFFICE_AI_SKILLS_DIRS` env overrides).
-- **Markdown tables & inline diffs**: Renders clean Markdown tables in chat and word/CJK inline diffs on text edits.
-- **Safety guardrails**: Destructive edits (`delete_slide`, `clear_range`) are never auto-applied even in Auto mode.
+### Shared UX, Global Skills, MCP Tools, Chat History & Performance
+- **Global `AGENTS.md` & Skills across harnesses**: Automatically discovers global instructions (`AGENTS.override.md`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`) and global `SKILL.md` folders across **Claude Code** (`~/.claude/`), **Codex** (`~/.codex/`), **Pi** (`$PI_CODING_AGENT_DIR` / `~/.pi/agent/`), **OpenCode** (`$OPENCODE_CONFIG_DIR` / `~/.config/opencode/`), **Gemini / Antigravity** (`~/.gemini/`), **Cursor** (`~/.cursor/skills`), `~/.agents/`, `~/skills`, and `~/.config/word-poc/` (plus `OFFICE_AI_AGENTS_PATH` / `OFFICE_AI_SKILLS_DIRS`). Manage and toggle live in the **Skills** panel or invoke with `/skill-name`.
+- **Native Tool Calling & MCP Client**: Built-in safe tools (`calculate` zero-eval math verifier + sandboxed `read_skill_resource`) plus a zero-dependency **MCP client** (stdio & Streamable HTTP) that auto-discovers MCP servers from `~/.config/word-poc/mcp.json`, Pi (`~/.pi/agent/mcp.json`), Claude (`~/.claude.json` / `~/.claude/mcp.json`), and OpenCode (`~/.config/opencode/opencode.jsonc`). Read-only tools run seamlessly; external write MCP tools respect Ask vs Auto permission gating.
+- **Persistent Local Chat History & Compaction**: Conversations auto-save locally to `~/.config/word-poc/sessions/` (`chmod 600`) with a **History** drawer to restore or delete past threads per host, plus automatic rolling context compaction on long chats and Anthropic ephemeral prompt caching.
+- **Performance & Hardening**: Two-phase bounded Excel reads (prevents bridge OOM on 100k-row sheets or `Cmd+A`), multi-area Excel selection fallback, PowerPoint 60-slide windowing + grouped-shape/table extraction, `requestAnimationFrame` streaming throttle, upstream `AbortController` cancellation on Stop, UTF-8 safe `Buffer.concat` HTTP parsing, and bounded WKWebView client memory.
 - **Private & local**: Runs on `https://localhost:3443` on your Mac. API keys stay in `~/.config/word-poc/.env` (`chmod 600`) or environment variables and are never sent back to the browser or stored in git.
 
 ## Quick Install (macOS)
@@ -74,11 +75,13 @@ Keys are loaded at runtime on your machine in this order:
 ## Architecture
 
 - [`AGENTS.md`](AGENTS.md) — Contributor & coding-agent guide
-- [`server.mjs`](server.mjs) — Thin HTTPS bootstrap (IPv4 + IPv6 loopback)
-- [`lib/server-core.mjs`](lib/server-core.mjs) — Testable HTTP API handler (`/api/config`, `/api/keys`, `/api/skills`, `/api/chat`) & allowlisted static file router
-- [`lib/providers.mjs`](lib/providers.mjs) — Provider registry, local `.env`/config store, and OpenAI/Anthropic SSE stream adapters
-- [`lib/prompts.mjs`](lib/prompts.mjs) — Host-specific system prompts & context builders for Word, Excel, and PowerPoint
-- [`lib/skills.mjs`](lib/skills.mjs) — Global `AGENTS.md` and `SKILL.md` discovery, YAML frontmatter parser, `/skill-name` resolution, and prompt assembly
+- [`server.mjs`](server.mjs) — Thin HTTPS bootstrap (IPv4 + IPv6 loopback) + MCP cleanup hooks
+- [`lib/server-core.mjs`](lib/server-core.mjs) — Testable HTTP API handler (`/api/config`, `/api/keys`, `/api/skills`, `/api/mcp`, `/api/sessions`, `/api/chat`) & allowlisted static file router
+- [`lib/providers.mjs`](lib/providers.mjs) — Provider registry, local `.env`/config store, and OpenAI/Anthropic tool-calling SSE stream adapters with prompt caching & abort propagation
+- [`lib/prompts.mjs`](lib/prompts.mjs) — Host-specific system prompts & context builders with truncation notices
+- [`lib/skills.mjs`](lib/skills.mjs) — Global `AGENTS.md` and `SKILL.md` discovery (Pi, OpenCode, Claude, Codex, Gemini, Cursor, `~/skills`), bundled resource reader, and TTL cache
+- [`lib/sessions.mjs`](lib/sessions.mjs) — Persistent local chat sessions & rolling context compaction
+- [`lib/mcp.mjs`](lib/mcp.mjs) & [`lib/tools.mjs`](lib/tools.mjs) — Zero-dep MCP client (stdio + Streamable HTTP) and built-in safe tools
 - [`lib/format.js`](lib/format.js) — Multi-host `<edit>` parser, XSS-safe Markdown (with tables & citations), and word/CJK diff engine
 - [`lib/excel-utils.js`](lib/excel-utils.js) — Pure Excel A1 parsing, grid/formula coercion, workbook snapshot formatting, and error detection
 - [`lib/ppt-utils.js`](lib/ppt-utils.js) — Pure PowerPoint slide spec parsing, Slide Master layout matching, placeholder classification, and deck serialization
@@ -88,8 +91,8 @@ Keys are loaded at runtime on your machine in this order:
 ## Development, Tests & Evaluations
 
 ```bash
-npm test      # run unit & integration tests across Word, Excel, PowerPoint, Skills, and HTTP server
-npm run eval  # run end-to-end multi-host evaluation suite (19 scenarios & quality rubrics)
+npm test      # run unit & integration tests across Word, Excel, PowerPoint, Skills, Sessions, MCP/Tools, and HTTP server
+npm run eval  # run end-to-end multi-host evaluation suite (24 scenarios & stress/edge-case rubrics)
 npm start     # run the HTTPS server in the foreground
 ```
 

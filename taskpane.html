@@ -19,7 +19,11 @@
     </select>
   </div>
   <div class="header-actions">
-    <button id="skills-btn" class="icon-pill" title="Global AGENTS.md & Skills">
+    <button id="history-btn" class="icon-pill" title="Saved chat history">
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="5.8" stroke="currentColor" stroke-width="1.4"/><path d="M8 4.8V8l2.2 1.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>History</span>
+    </button>
+    <button id="skills-btn" class="icon-pill" title="Global AGENTS.md, Skills & MCP Tools">
       <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 1.8 9.6 6.4 14.2 8 9.6 9.6 8 14.2 6.4 9.6 1.8 8 6.4 6.4 8 1.8Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
       <span>Skills</span>
     </button>
@@ -34,11 +38,20 @@
   </div>
 </header>
 
-<div id="skills-panel" hidden role="dialog" aria-label="Global AGENTS.md and Skills">
+<div id="history-panel" hidden role="dialog" aria-label="Saved chat history">
   <div class="keys-head">
-    <strong>AGENTS.md &amp; Global Skills</strong>
+    <strong>Chat History</strong>
+    <button id="history-close" type="button" class="micro-btn" aria-label="Close">&times;</button>
+  </div>
+  <div id="history-list" class="skills-section"></div>
+  <p class="keys-note">Saved locally in <code>~/.config/word-poc/sessions/</code> (chmod 600).</p>
+</div>
+
+<div id="skills-panel" hidden role="dialog" aria-label="Global AGENTS.md, Skills and MCP Tools">
+  <div class="keys-head">
+    <strong>AGENTS.md, Skills &amp; MCP</strong>
     <div class="skills-head-actions">
-      <button id="skills-refresh" type="button" class="micro-btn" title="Rescan global AGENTS.md and skills from disk" aria-label="Refresh skills">
+      <button id="skills-refresh" type="button" class="micro-btn" title="Rescan global AGENTS.md, skills, and MCP servers" aria-label="Refresh skills">
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.4-3.65M13.5 2.5v2.4h-2.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
       <button id="skills-close" type="button" class="micro-btn" aria-label="Close">&times;</button>
@@ -46,6 +59,7 @@
   </div>
   <div id="agents-section" class="skills-section"></div>
   <div id="skills-section" class="skills-section"></div>
+  <div id="mcp-section" class="skills-section"></div>
   <p id="skills-paths-note" class="keys-note"></p>
 </div>
 

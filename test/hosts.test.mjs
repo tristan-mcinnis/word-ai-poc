@@ -260,3 +260,153 @@ test('PowerPoint adapter reads deck/layouts, navigates slides, and executes all 
   assert.equal(delRes.ok, true);
   assert.equal(env.state.slides.length, 4);
 });
+
+test('Excel adapter handles 50k-row two-phase clipped reads, multi-area selections, and sheet name collisions', async () => {
+  const { sanitizeSheetName } = await import('../lib/hosts/excel.js');
+  assert.equal(sanitizeSheetName('Q1:Sales/2026*', ['Summary']), 'Q1 Sales 2026');
+  assert.equal(sanitizeSheetName('Summary', ['Summary', 'Summary (2)']), 'Summary (3)');
+
+  // Mock giant 50,000-row usedRange and 1,048,576-row Ctrl+A selection that THROWS if values are loaded unclipped!
+  let clippedUsedRequested = null;
+  let clippedSelRequested = null;
+  const makeGiantRange = (address, rowCount, columnCount, onClip) => ({
+    address,
+    rowCount,
+    columnCount,
+    isNullObject: false,
+    load(props) {
+      if (String(props).includes('values')) {
+        throw new Error('Bridge payload overflow: attempted unclipped load on giant range!');
+      }
+    },
+    getAbsoluteResizedRange(r, c) {
+      onClip(r, c);
+      return {
+        address: `${address.split('!')[0]}!A1:B2`,
+        load() {},
+        values: [['Header', 'Val'], ['Row1', 42]],
+        formulas: [['Header', 'Val'], ['Row1', 42]],
+      };
+    },
+  });
+
+  const giantEnv = {
+    Office: { HostType: { Excel: 'Excel' } },
+    Excel: {
+      async run(cb) {
+        const sheet = {
+          name: 'BigData',
+          position: 0,
+          load() {},
+          getUsedRangeOrNullObject() {
+            return makeGiantRange('BigData!A1:AZ50000', 50000, 52, (r, c) => { clippedUsedRequested = [r, c]; });
+          },
+        };
+        const ctx = {
+          workbook: {
+            worksheets: {
+              items: [sheet],
+              load() {},
+              getActiveWorksheet: () => sheet,
+            },
+            // Simulate multi-area Cmd+Click where getSelectedRange() throws and getSelectedRanges() succeeds
+            getSelectedRange() { throw new Error('InvalidSelection'); },
+            getSelectedRanges() {
+              return {
+                areas: {
+                  getItemAt: () => makeGiantRange('BigData!A1:A1048576', 1048576, 1, (r, c) => { clippedSelRequested = [r, c]; }),
+                },
+              };
+            },
+          },
+          async sync() {},
+        };
+        return cb(ctx);
+      },
+    },
+  };
+
+  const excel = createHostAdapter('excel', giantEnv);
+  const ctx = await excel.readContext();
+  assert.deepEqual(clippedUsedRequested, [70, 22]);
+  assert.deepEqual(clippedSelRequested, [40, 1]);
+  assert.match(ctx.documentText, /50000×52 used cells/);
+  assert.match(ctx.hostContext.selectionClipped, /1048576×1/);
+});
+
+test('PowerPoint adapter windows 100-slide decks and extracts Grouped shape & Table text', async () => {
+  const manySlides = Array.from({ length: 100 }, (_, i) => ({
+    id: `sl-${i + 1}`,
+    layoutName: 'Title and Content',
+    shapes: [{ id: `sh-${i + 1}`, name: 'Title 1', type: 'Placeholder', text: `Slide Title ${i + 1}` }],
+  }));
+  // Add a Group shape and a native Table shape on Slide 50
+  const env = createMockPowerPointEnv({
+    slides: manySlides,
+    selectedSlideIds: ['sl-50'],
+    selectedShapeIds: [],
+  });
+  // Augment mock PowerPoint run to include a Group and Table shape on Slide 50
+  const origRun = env.PowerPoint.run;
+  env.PowerPoint.run = async cb => origRun(async ctx => {
+    const origSlidesItems = Object.getOwnPropertyDescriptor(ctx.presentation.slides, 'items').get;
+    Object.defineProperty(ctx.presentation.slides, 'items', {
+      get() {
+        const items = origSlidesItems();
+        const sl50 = items[49];
+        const origShapesGetter = Object.getOwnPropertyDescriptor(sl50.shapes, 'items').get;
+        Object.defineProperty(sl50.shapes, 'items', {
+          get() {
+            return [
+              ...origShapesGetter(),
+              {
+                id: 'grp-1',
+                name: 'Callout Group',
+                type: 'Group',
+                group: {
+                  shapes: {
+                    items: [{ id: 'g-child', name: 'Text 1', type: 'TextBox', textFrame: { hasText: true, load() {}, textRange: { text: 'Grouped KPI +42%', load() {} } } }],
+                    load() {},
+                  },
+                },
+              },
+              {
+                id: 'tbl-50',
+                name: 'Metrics Table',
+                type: 'Table',
+                getTable: () => ({ values: [['KPI', 'Q3'], ['ARR', '$14M']], load() {} }),
+              },
+            ];
+          },
+        });
+        return items;
+      },
+    });
+    return cb(ctx);
+  });
+
+  const ppt = createHostAdapter('powerpoint', env);
+  const ctx = await ppt.readContext();
+  assert.equal(ctx.hostContext.slideCount, 100);
+  assert.equal(ctx.hostContext.slidesOmitted, 40);
+  assert.equal(ctx.hostContext.currentSlideIndex, 50);
+  assert.match(ctx.documentText, /Grouped KPI \+42%/);
+  assert.match(ctx.documentText, /\| ARR \| \$14M \|/);
+});
+
+test('Word adapter disambiguates duplicate replace_match occurrences via occurrence attribute', async () => {
+  const env = createMockWordEnv({
+    paragraphs: ['Target phrase in section 1.', 'Target phrase in section 2.'],
+    selectionIndex: 0,
+  });
+  const word = createHostAdapter('word', env);
+  const res = await word.applyEdit({
+    action: 'replace_match',
+    find: 'Target phrase',
+    content: 'Updated phrase',
+    attrs: { occurrence: '2' },
+  });
+  assert.equal(res.ok, true);
+  assert.equal(env.state.paragraphs[0], 'Target phrase in section 1.');
+  assert.equal(env.state.paragraphs[1], 'Updated phrase in section 2.');
+});
